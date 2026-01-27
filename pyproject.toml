@@ -1,0 +1,19 @@
+[project]
+name = "inversion"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "ai2thor>=5.0.0",
+    "allenact>=0.5.4",
+    "allenact-plugins[navigation,robothor]>=0.5.4",
+    "matplotlib>=3.10.7",
+    "numpy>=2.3.4",
+    "pillow>=12.0.0",
+    "scipy>=1.16.3",
+    "seaborn>=0.13.2",
+    "torch>=2.9.0",
+    "tqdm>=4.67.1",
+    "wandb>=0.23.0",
+]
