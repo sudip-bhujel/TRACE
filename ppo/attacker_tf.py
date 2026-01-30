@@ -13,15 +13,18 @@ Data structure (from capture_gradients.py):
 
 import math
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
+from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, Dataset
+from torchvision import models
 from tqdm import tqdm
 
 
@@ -453,6 +456,193 @@ class GradientInversionTransformer(nn.Module):
 # ==============================================================================
 # Loss Functions
 # ==============================================================================
+class VGGPerceptualLoss(nn.Module):
+    """
+    VGG-based Perceptual Loss.
+
+    Computes feature-space loss using VGG16 pretrained on ImageNet.
+    This encourages perceptual similarity rather than pixel-wise matching,
+    resulting in sharper and more realistic reconstructions.
+    """
+
+    def __init__(
+        self,
+        layers: List[str] = None,
+        resize: bool = True,
+    ):
+        """
+        Initialize VGG perceptual loss.
+
+        Args:
+            layers: Which VGG layers to use for feature extraction.
+                   Options: "relu1_2", "relu2_2", "relu3_3", "relu4_3", "relu5_3"
+            resize: Whether to resize input to 224x224 for VGG
+        """
+        super().__init__()
+
+        if layers is None:
+            layers = ["relu2_2", "relu3_3"]
+
+        self.resize = resize
+
+        # Load pretrained VGG16 with SSL workaround for HPC environments
+        import os
+        import ssl
+
+        # Temporarily disable SSL verification (common HPC issue)
+        old_ssl_context = ssl._create_default_https_context
+        ssl._create_default_https_context = ssl._create_unverified_context
+        old_ca_bundle = os.environ.get("CURL_CA_BUNDLE", "")
+        os.environ["CURL_CA_BUNDLE"] = ""
+
+        try:
+            vgg = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1)
+        except Exception as e:
+            print(f"Warning: Failed to download VGG weights: {e}")
+            print("Trying without pretrained weights...")
+            vgg = models.vgg16(weights=None)
+        finally:
+            # Restore SSL context
+            ssl._create_default_https_context = old_ssl_context
+            os.environ["CURL_CA_BUNDLE"] = old_ca_bundle
+
+        # VGG16 layer name to index mapping
+        layer_map = {
+            "relu1_1": 1,
+            "relu1_2": 3,
+            "relu2_1": 6,
+            "relu2_2": 8,
+            "relu3_1": 11,
+            "relu3_2": 13,
+            "relu3_3": 15,
+            "relu4_1": 18,
+            "relu4_2": 20,
+            "relu4_3": 22,
+            "relu5_1": 25,
+            "relu5_2": 27,
+            "relu5_3": 29,
+        }
+
+        # Get max layer index we need
+        max_idx = max(layer_map[layer] for layer in layers) + 1
+
+        # Extract VGG features up to the required layer
+        self.vgg_features = nn.Sequential(*list(vgg.features.children())[:max_idx])
+
+        # Freeze VGG weights
+        for param in self.vgg_features.parameters():
+            param.requires_grad = False
+
+        self.layer_indices = {layer: layer_map[layer] for layer in layers}
+        self.register_buffer(
+            "mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+        )
+        self.register_buffer(
+            "std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+        )
+
+    def normalize(self, x: torch.Tensor) -> torch.Tensor:
+        """Normalize input to ImageNet statistics."""
+        return (x - self.mean) / self.std
+
+    def extract_features(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """Extract features from specified VGG layers."""
+        if self.resize:
+            x = F.interpolate(x, size=(224, 224), mode="bilinear", align_corners=False)
+
+        x = self.normalize(x)
+        features = {}
+
+        for name, module in self.vgg_features._modules.items():
+            x = module(x)
+            idx = int(name)
+            for layer_name, layer_idx in self.layer_indices.items():
+                if idx == layer_idx:
+                    features[layer_name] = x
+
+        return features
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        Compute perceptual loss.
+
+        Args:
+            pred: Predicted images (B, 3, H, W)
+            target: Target images (B, 3, H, W)
+
+        Returns:
+            Perceptual loss value
+        """
+        pred_features = self.extract_features(pred)
+        target_features = self.extract_features(target)
+
+        loss = 0.0
+        for layer_name in self.layer_indices.keys():
+            loss += F.mse_loss(pred_features[layer_name], target_features[layer_name])
+
+        return loss / len(self.layer_indices)
+
+
+def ssim_loss(
+    pred: torch.Tensor, target: torch.Tensor, window_size: int = 11
+) -> torch.Tensor:
+    """
+    Compute SSIM loss (1 - SSIM).
+
+    Args:
+        pred: Predicted images (B, C, H, W)
+        target: Target images (B, C, H, W)
+        window_size: Window size for SSIM computation
+
+    Returns:
+        1 - SSIM (so lower is better)
+    """
+    C1 = 0.01**2
+    C2 = 0.03**2
+
+    # Create Gaussian window
+    sigma = 1.5
+    gauss = torch.exp(
+        -torch.arange(window_size).float().sub(window_size // 2).pow(2) / (2 * sigma**2)
+    )
+    gauss = gauss / gauss.sum()
+    window = gauss.unsqueeze(1) * gauss.unsqueeze(0)
+    window = window.unsqueeze(0).unsqueeze(0)
+    window = window.expand(pred.size(1), 1, window_size, window_size).contiguous()
+    window = window.to(pred.device, pred.dtype)
+
+    # Compute means
+    mu1 = F.conv2d(pred, window, padding=window_size // 2, groups=pred.size(1))
+    mu2 = F.conv2d(target, window, padding=window_size // 2, groups=target.size(1))
+
+    mu1_sq = mu1.pow(2)
+    mu2_sq = mu2.pow(2)
+    mu1_mu2 = mu1 * mu2
+
+    # Compute variances and covariance
+    sigma1_sq = (
+        F.conv2d(pred * pred, window, padding=window_size // 2, groups=pred.size(1))
+        - mu1_sq
+    )
+    sigma2_sq = (
+        F.conv2d(
+            target * target, window, padding=window_size // 2, groups=target.size(1)
+        )
+        - mu2_sq
+    )
+    sigma12 = (
+        F.conv2d(pred * target, window, padding=window_size // 2, groups=pred.size(1))
+        - mu1_mu2
+    )
+
+    # SSIM formula
+    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / (
+        (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2)
+    )
+
+    return 1 - ssim_map.mean()
+
+
 class CombinedLoss(nn.Module):
     """
     Combined loss for image reconstruction and action prediction.
@@ -461,6 +651,8 @@ class CombinedLoss(nn.Module):
     1. MSE Loss - Pixel-wise image reconstruction
     2. L1 Loss - Robustness to outliers
     3. Cross-Entropy Loss - Action classification
+    4. Perceptual Loss (VGG) - Feature-space similarity
+    5. SSIM Loss - Structural similarity
     """
 
     def __init__(
@@ -468,15 +660,26 @@ class CombinedLoss(nn.Module):
         mse_weight: float = 1.0,
         l1_weight: float = 0.5,
         action_weight: float = 0.1,
+        perceptual_weight: float = 0.1,
+        ssim_weight: float = 0.0,
+        perceptual_layers: List[str] = None,
     ):
         super().__init__()
         self.mse_weight = mse_weight
         self.l1_weight = l1_weight
         self.action_weight = action_weight
+        self.perceptual_weight = perceptual_weight
+        self.ssim_weight = ssim_weight
 
         self.mse_loss = nn.MSELoss()
         self.l1_loss = nn.L1Loss()
         self.ce_loss = nn.CrossEntropyLoss()
+
+        # VGG perceptual loss (only create if weight > 0)
+        if perceptual_weight > 0:
+            self.perceptual_loss = VGGPerceptualLoss(layers=perceptual_layers)
+        else:
+            self.perceptual_loss = None
 
     def forward(
         self,
@@ -506,7 +709,7 @@ class CombinedLoss(nn.Module):
         # Action loss
         action_loss = self.ce_loss(pred_actions, target_actions)
 
-        # Combined
+        # Combined base losses
         total = (
             self.mse_weight * mse
             + self.l1_weight * l1
@@ -517,8 +720,21 @@ class CombinedLoss(nn.Module):
             "mse": mse.item(),
             "l1": l1.item(),
             "action": action_loss.item(),
-            "total": total.item(),
         }
+
+        # Perceptual loss
+        if self.perceptual_loss is not None and self.perceptual_weight > 0:
+            perceptual = self.perceptual_loss(pred_images, target_images)
+            total = total + self.perceptual_weight * perceptual
+            loss_dict["perceptual"] = perceptual.item()
+
+        # SSIM loss
+        if self.ssim_weight > 0:
+            ssim = ssim_loss(pred_images, target_images)
+            total = total + self.ssim_weight * ssim
+            loss_dict["ssim"] = ssim.item()
+
+        loss_dict["total"] = total.item()
 
         return total, loss_dict
 
@@ -537,8 +753,10 @@ def train_epoch(
     accumulation_steps: int = 1,
 ) -> dict:
     """Train for one epoch with mixed precision and gradient accumulation."""
+    from collections import defaultdict
+
     model.train()
-    total_losses = {"mse": 0, "l1": 0, "action": 0, "total": 0}
+    total_losses = defaultdict(float)  # Dynamic keys for perceptual/ssim
     correct = 0
     total = 0
 
@@ -599,8 +817,10 @@ def validate(
     device: torch.device,
 ) -> dict:
     """Validate the model."""
+    from collections import defaultdict
+
     model.eval()
-    total_losses = {"mse": 0, "l1": 0, "action": 0, "total": 0}
+    total_losses = defaultdict(float)  # Dynamic keys for perceptual/ssim
     correct = 0
     total = 0
 
@@ -638,9 +858,11 @@ def save_reconstructions(
     model.eval()
 
     gradients, images, actions = next(iter(dataloader))
-    gradients = gradients[:num_samples].to(device)
-    images = images[:num_samples]
-    actions = actions[:num_samples]
+    # Handle smaller batches
+    actual_samples = min(num_samples, len(gradients))
+    gradients = gradients[:actual_samples].to(device)
+    images = images[:actual_samples]
+    actions = actions[:actual_samples]
 
     with torch.no_grad():
         pred_images, pred_actions, _ = model(gradients)
@@ -649,9 +871,9 @@ def save_reconstructions(
     pred_labels = pred_actions.argmax(dim=-1).cpu()
 
     # Create figure
-    fig, axes = plt.subplots(2, num_samples, figsize=(2 * num_samples, 4))
+    fig, axes = plt.subplots(2, actual_samples, figsize=(2 * actual_samples, 4))
 
-    for i in range(num_samples):
+    for i in range(actual_samples):
         # Ground truth
         axes[0, i].imshow(images[i].permute(1, 2, 0).numpy())
         axes[0, i].set_title(f"GT (a={actions[i].item()})")
@@ -678,6 +900,7 @@ def train(
     save_dir: str = "ckpts/attacker",
     gradient_dim: Optional[int] = None,
     use_transformer: bool = False,
+    loss_config: Optional[dict] = None,
 ):
     """
     Main training function.
@@ -692,6 +915,7 @@ def train(
         gradient_dim: Optional gradient dimension (None = use full)
         use_transformer: Whether to use transformer for sequence modeling
         accumulation_steps: Number of gradient accumulation steps
+        loss_config: Dict with loss weights (mse, l1, action, perceptual, ssim)
     """
     # Setup device
     if device == "auto":
@@ -720,7 +944,7 @@ def train(
         dataset, [train_size, val_size], generator=torch.Generator().manual_seed(42)
     )
 
-    print(f"\nDataset split:")
+    print("\nDataset split:")
     print(f"  Train: {len(train_dataset)}")
     print(f"  Val: {len(val_dataset)}")
 
@@ -755,8 +979,34 @@ def train(
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"\nModel parameters: {num_params:,}")
 
+    # Loss config defaults
+    if loss_config is None:
+        loss_config = {}
+
+    mse_weight = loss_config.get("mse_weight", 1.0)
+    l1_weight = loss_config.get("l1_weight", 0.5)
+    action_weight = loss_config.get("action_weight", 0.1)
+    perceptual_weight = loss_config.get("perceptual_weight", 0.1)
+    ssim_weight = loss_config.get("ssim_weight", 0.0)
+    perceptual_layers = loss_config.get("perceptual_layers", None)
+
+    print(f"\nLoss weights:")
+    print(f"  MSE: {mse_weight}, L1: {l1_weight}, Action: {action_weight}")
+    print(f"  Perceptual: {perceptual_weight}, SSIM: {ssim_weight}")
+
     # Loss and optimizer
-    criterion = CombinedLoss(mse_weight=1.0, l1_weight=0.5, action_weight=0.1)
+    criterion = CombinedLoss(
+        mse_weight=mse_weight,
+        l1_weight=l1_weight,
+        action_weight=action_weight,
+        perceptual_weight=perceptual_weight,
+        ssim_weight=ssim_weight,
+        perceptual_layers=perceptual_layers,
+    )
+    # Move perceptual loss to device if it exists
+    if hasattr(criterion, "perceptual_loss") and criterion.perceptual_loss is not None:
+        criterion.perceptual_loss = criterion.perceptual_loss.to(device)
+
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
 
@@ -860,43 +1110,76 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Train gradient inversion model")
     parser.add_argument(
-        "--h5_path",
+        "--config",
         type=str,
-        default="trajectory_data/gradients.h5",
-        help="Path to HDF5 data file",
+        default="ppo/config.yaml",
+        help="Path to YAML config file",
     )
-    parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--device", type=str, default="auto", help="Device")
+    # CLI overrides (optional)
     parser.add_argument(
-        "--save_dir",
-        type=str,
-        default="ckpts/attacker",
-        help="Save directory",
+        "--gradient_dim", type=int, default=None, help="Override gradient_dim"
     )
+    parser.add_argument("--save_dir", type=str, default=None, help="Override save_dir")
+    parser.add_argument("--epochs", type=int, default=None, help="Override num_epochs")
     parser.add_argument(
-        "--gradient_dim",
-        type=int,
+        "--perceptual_weight",
+        type=float,
         default=None,
-        help="Gradient dimension (None = use full)",
-    )
-    parser.add_argument(
-        "--use_transformer",
-        action="store_true",
-        default=True,
-        help="Use transformer for sequence modeling",
+        help="Override perceptual_weight",
     )
 
     args = parser.parse_args()
 
+    # Load config from YAML using OmegaConf
+    if Path(args.config).exists():
+        cfg = OmegaConf.load(args.config)
+        print(f"Loaded config from {args.config}")
+    else:
+        print(f"Config file not found: {args.config}, using defaults")
+        cfg = OmegaConf.create({})
+
+    # Apply CLI overrides
+    if args.gradient_dim is not None:
+        OmegaConf.update(cfg, "data.gradient_dim", args.gradient_dim)
+    if args.save_dir is not None:
+        OmegaConf.update(cfg, "output.save_dir", args.save_dir)
+    if args.epochs is not None:
+        OmegaConf.update(cfg, "training.num_epochs", args.epochs)
+    if args.perceptual_weight is not None:
+        OmegaConf.update(cfg, "loss.perceptual_weight", args.perceptual_weight)
+
+    # Extract config values with defaults
+    data_cfg = cfg.get("data", {})
+    model_cfg = cfg.get("model", {})
+    loss_cfg = cfg.get("loss", {})
+    training_cfg = cfg.get("training", {})
+    output_cfg = cfg.get("output", {})
+
+    # Build loss_config dict
+    loss_config = {
+        "mse_weight": loss_cfg.get("mse_weight", 1.0),
+        "l1_weight": loss_cfg.get("l1_weight", 0.5),
+        "action_weight": loss_cfg.get("action_weight", 0.1),
+        "perceptual_weight": loss_cfg.get("perceptual_weight", 0.1),
+        "ssim_weight": loss_cfg.get("ssim_weight", 0.0),
+        "perceptual_layers": list(loss_cfg.get("perceptual_layers", [])) or None,
+    }
+
     train(
-        h5_path=args.h5_path,
-        num_epochs=args.epochs,
-        batch_size=args.batch_size,
-        learning_rate=args.lr,
-        device=args.device,
-        save_dir=args.save_dir,
-        gradient_dim=args.gradient_dim,
-        use_transformer=args.use_transformer,
+        h5_path=data_cfg.get("h5_path", "trajectory_data/gradients.h5"),
+        num_epochs=training_cfg.get("num_epochs", 50),
+        batch_size=training_cfg.get("batch_size", 4),
+        accumulation_steps=training_cfg.get("accumulation_steps", 8),
+        learning_rate=training_cfg.get("learning_rate", 1e-4),
+        device=cfg.get("device", "auto"),
+        save_dir=output_cfg.get("save_dir", "ckpts/attacker"),
+        gradient_dim=data_cfg.get("gradient_dim", None),
+        use_transformer=model_cfg.get("use_transformer", True),
+        loss_config=loss_config,
     )
+
+# Usage examples:
+# uv run -m ppo.attacker_tf                                    # Use config.yaml defaults
+# uv run -m ppo.attacker_tf --gradient_dim 131072              # Override gradient_dim
+# uv run -m ppo.attacker_tf --perceptual_weight 0.5            # Higher perceptual loss
+# uv run -m ppo.attacker_tf --config ppo/my_config.yaml        # Use custom config

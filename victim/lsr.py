@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from lsr.nnet import FeatureCollector, NNetwork
+from victim.nnet import FeatureCollector, NNetwork
 
 
 def load_image(image_path: Path, size=(150, 150)) -> torch.Tensor:
@@ -170,9 +170,14 @@ def collect_all_features(
     device: str | None = None,
     batch_size: int = 32,
     num_workers: int = 4,
+    num_capture_layers: int = 1,
+    store_mode: str = "both",
 ):
     """
     Collect features for all scenes in the dataset with batch processing.
+
+    Each scene is saved to a separate temp file immediately after processing,
+    allowing resume if the job is killed. Final merge happens at the end.
 
     Args:
         model: Model to use for feature extraction
@@ -182,10 +187,18 @@ def collect_all_features(
         device: Device to run the model on (cuda/cpu)
         batch_size: Number of images to process at once (default: 32)
         num_workers: Number of workers for parallel image loading (default: 4)
+        num_capture_layers: Number of layers to capture gradients from (default: 1).
+                           Use -1 to capture all layers.
+        store_mode: What gradients to store:
+                   - "normalized_only": Only store normalized gradients (saves ~50% memory)
+                   - "both": Store both weight and normalized gradients
 
     Returns:
         FeatureCollector with all collected features
     """
+    import pickle
+    from pathlib import Path
+
     # Move model to device
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -193,23 +206,53 @@ def collect_all_features(
     model = model.to(device_obj)
     print(f"Using device: {device_obj}")
     print(f"Batch size: {batch_size}, Num workers: {num_workers}")
+    print(f"Capturing gradients from {num_capture_layers} layer(s)")
+    print(f"Store mode: {store_mode}")
 
     model.eval()
-    model.register_gradient_hook()
+    model.register_gradient_hook(num_layers=num_capture_layers)
 
-    collector = FeatureCollector(subsequence_length=subsequence_length)
+    # Setup paths - use a temp directory for scene files
+    save_path_obj = Path(save_path)
+    save_path_obj.parent.mkdir(parents=True, exist_ok=True)
+    temp_dir = save_path_obj.parent / f".{save_path_obj.stem}_scenes"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = temp_dir / "checkpoint.pkl"
+
+    # Load checkpoint (just scene IDs - very fast!)
+    processed_scenes = set()
+    if checkpoint_path.exists():
+        try:
+            print("\n📂 Found checkpoint, loading...")
+            with open(checkpoint_path, "rb") as f:
+                processed_scenes = pickle.load(f)
+            print(f"   Resuming: {len(processed_scenes)} scenes already done")
+        except Exception as e:
+            print(f"   ⚠️ Failed to load checkpoint: {e}, starting fresh...")
+            processed_scenes = set()
 
     # Get all scenes
     scenes = get_scene_image_paths(data_dir)
 
     print(f"Found {len(scenes)} scenes")
+    remaining_scenes = len(scenes) - len(processed_scenes)
+    print(f"Scenes to process: {remaining_scenes}")
     print("Processing scenes...")
 
     # Process each scene
     for scene_idx, (scene_id, image_paths) in enumerate(scenes.items()):
+        # Skip already processed scenes
+        if scene_id in processed_scenes:
+            continue
+
         num_images = len(image_paths)
         print(
             f"\n[{scene_idx + 1}/{len(scenes)}] Processing {scene_id} ({num_images} images)"
+        )
+
+        # Create a temporary collector for just this scene
+        scene_collector = FeatureCollector(
+            subsequence_length=subsequence_length, store_mode=store_mode
         )
 
         # Process in batches
@@ -236,9 +279,9 @@ def collect_all_features(
                 # Backward pass to generate gradients
                 pseudo_loss.backward()
 
-                # Collect features with scene_id
-                features = model.get_last_layer_gradients()
-                collector.add_features(
+                # Collect features with scene_id - use multi-layer gradients
+                features = model.get_layer_gradients()
+                scene_collector.add_features(
                     features, scene_id=scene_id, image_path=str(img_path)
                 )
 
@@ -248,8 +291,50 @@ def collect_all_features(
             # Progress update per batch
             print(f"  Processed {batch_end}/{num_images} images")
 
-    # Save
+        # Save this scene to its own file (fast - just one scene at a time)
+        scene_file = temp_dir / f"{scene_id.replace('/', '_')}.pkl"
+        scene_data = {
+            "scene_id": scene_id,
+            "scene_data": scene_collector.scenes[scene_id],
+            "image_paths": scene_collector.image_paths[scene_id],
+        }
+        print(f"  💾 Saving scene...")
+        with open(scene_file, "wb") as f:
+            pickle.dump(scene_data, f)
+
+        # Update checkpoint (very fast - just scene IDs)
+        processed_scenes.add(scene_id)
+        with open(checkpoint_path, "wb") as f:
+            pickle.dump(processed_scenes, f)
+
+        # Free memory
+        del scene_collector
+        del scene_data
+
+    # Merge all scene files into final output
+    print(f"\n📦 Merging {len(processed_scenes)} scenes into {save_path}...")
+    collector = FeatureCollector(
+        subsequence_length=subsequence_length, store_mode=store_mode
+    )
+
+    for scene_file in temp_dir.glob("*.pkl"):
+        if scene_file.name == "checkpoint.pkl":
+            continue
+        with open(scene_file, "rb") as f:
+            scene_data = pickle.load(f)
+        collector.scenes[scene_data["scene_id"]] = scene_data["scene_data"]
+        collector.image_paths[scene_data["scene_id"]] = scene_data["image_paths"]
+        collector.metadata["num_scenes"] += 1
+        collector.metadata["total_samples"] += len(scene_data["image_paths"])
+
+    # Save final result
     collector.save(save_path)
+
+    # Clean up temp directory
+    import shutil
+
+    shutil.rmtree(temp_dir)
+    print("   Removed temporary scene files")
 
     print("\n✅ Feature collection complete!")
     print(f"   Total scenes: {collector.metadata['num_scenes']}")
@@ -383,6 +468,19 @@ def main():
         default=None,
         help="Path to model checkpoint to load (default: None, uses untrained model)",
     )
+    parser.add_argument(
+        "--num_capture_layers",
+        type=int,
+        default=1,
+        help="Number of layers to capture gradients from (default: 1, use -1 for all layers)",
+    )
+    parser.add_argument(
+        "--store_mode",
+        type=str,
+        default="normalized_only",
+        choices=["normalized_only", "both"],
+        help="What gradients to store: 'normalized_only' (saves ~50%% memory) or 'both' (default: normalized_only)",
+    )
     args = parser.parse_args()
 
     scenes = get_scene_image_paths(args.data_dir, args.num_images_per_scene)
@@ -409,6 +507,8 @@ def main():
             device=args.device,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
+            num_capture_layers=args.num_capture_layers,
+            store_mode=args.store_mode,
         )
 
         # Show full scene statistics

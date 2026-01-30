@@ -53,11 +53,14 @@ class NNetwork(nn.Module):
 
         self.fc2 = nn.Linear(hidden_size, output_size)
 
-        # Storage for gradients
-        self.last_layer_weight_gradients: Optional[torch.Tensor] = None
-        self.last_layer_bias_gradients: Optional[torch.Tensor] = None
-        self.weight_gradient_hook_handle = None
-        self.bias_gradient_hook_handle = None
+        # Storage for gradients - now supports multiple layers
+        self.layer_weight_gradients: Dict[str, torch.Tensor] = {}
+        self.layer_bias_gradients: Dict[str, torch.Tensor] = {}
+        self.gradient_hook_handles: List[Any] = []
+        self.num_capture_layers: int = 1  # Default: capture only last layer
+
+        # Get ordered list of layers with weights (for indexing from last)
+        self._weight_layers = self._get_weight_layers()
 
         # Storage for intermediate features
         self.capture_features = False
@@ -84,67 +87,133 @@ class NNetwork(nn.Module):
 
         return x
 
-    def _weight_gradient_hook(self, grad: torch.Tensor):
+    def _get_weight_layers(self) -> List[tuple]:
         """
-        Hook function to capture weight gradients from the last layer.
+        Get ordered list of layers that have weights.
+        Returns list of (layer_name, layer_module) tuples in forward order.
+        """
+        weight_layers = []
+        for name, module in self.named_modules():
+            if hasattr(module, "weight") and module.weight is not None:
+                # Skip the top-level module and batch norm layers (they have weight but not trainable in this context)
+                if name and not isinstance(module, nn.BatchNorm2d):
+                    weight_layers.append((name, module))
+        return weight_layers
+
+    def _create_weight_hook(self, layer_name: str):
+        """
+        Create a hook function for capturing weight gradients for a specific layer.
+        """
+
+        def hook(grad: torch.Tensor):
+            self.layer_weight_gradients[layer_name] = grad.detach().clone()
+
+        return hook
+
+    def _create_bias_hook(self, layer_name: str):
+        """
+        Create a hook function for capturing bias gradients for a specific layer.
+        """
+
+        def hook(grad: torch.Tensor):
+            self.layer_bias_gradients[layer_name] = grad.detach().clone()
+
+        return hook
+
+    def register_gradient_hook(self, num_layers: int = 1):
+        """
+        Register hooks to capture gradients from the specified number of layers.
+        Layers are counted from the last layer backwards.
 
         Args:
-            grad: Gradient tensor from the last layer weights
+            num_layers: Number of layers to capture gradients from (counting from last).
+                       Use -1 to capture all layers with weights.
         """
-        self.last_layer_weight_gradients = grad.detach().clone()
+        # Remove existing hooks
+        self.remove_gradient_hook()
 
-    def _bias_gradient_hook(self, grad: torch.Tensor):
-        """
-        Hook function to capture bias gradients from the last layer.
+        # Store the number of layers to capture
+        self.num_capture_layers = num_layers
 
-        Args:
-            grad: Gradient tensor from the last layer bias
-        """
-        self.last_layer_bias_gradients = grad.detach().clone()
+        # Refresh layer list (in case model structure changed)
+        self._weight_layers = self._get_weight_layers()
 
-    def register_gradient_hook(self):
-        """
-        Register hooks to capture gradients from the last layer's weights and bias.
-        This allows capturing gradients without full backpropagation.
-        """
-        if self.weight_gradient_hook_handle is not None:
-            self.weight_gradient_hook_handle.remove()
-        if self.bias_gradient_hook_handle is not None:
-            self.bias_gradient_hook_handle.remove()
+        # Determine which layers to capture
+        if num_layers == -1:
+            layers_to_capture = self._weight_layers
+        else:
+            # Take the last num_layers
+            layers_to_capture = self._weight_layers[-num_layers:]
 
-        # Register hook on the last layer's weight parameter
-        self.weight_gradient_hook_handle = self.fc2.weight.register_hook(
-            self._weight_gradient_hook
-        )
-        # Register hook on the last layer's bias parameter
-        if self.fc2.bias is not None:
-            self.bias_gradient_hook_handle = self.fc2.bias.register_hook(
-                self._bias_gradient_hook
-            )
+        # Register hooks for each layer
+        for layer_name, module in layers_to_capture:
+            # Register hook on weight
+            handle = module.weight.register_hook(self._create_weight_hook(layer_name))
+            self.gradient_hook_handles.append(handle)
+
+            # Register hook on bias if it exists
+            if hasattr(module, "bias") and module.bias is not None:
+                handle = module.bias.register_hook(self._create_bias_hook(layer_name))
+                self.gradient_hook_handles.append(handle)
 
     def remove_gradient_hook(self):
-        """Remove the gradient hooks if they exist."""
-        if self.weight_gradient_hook_handle is not None:
-            self.weight_gradient_hook_handle.remove()
-            self.weight_gradient_hook_handle = None
-        if self.bias_gradient_hook_handle is not None:
-            self.bias_gradient_hook_handle.remove()
-            self.bias_gradient_hook_handle = None
+        """Remove all gradient hooks if they exist."""
+        for handle in self.gradient_hook_handles:
+            handle.remove()
+        self.gradient_hook_handles = []
+        self.layer_weight_gradients = {}
+        self.layer_bias_gradients = {}
+
+    def get_layer_gradients(
+        self,
+    ) -> Optional[Dict[str, Dict[str, Optional[torch.Tensor]]]]:
+        """
+        Get the captured gradients from all registered layers.
+
+        Returns:
+            Dictionary mapping layer_name -> {'weight': tensor, 'bias': tensor or None},
+            or None if no gradients captured yet.
+
+            Example:
+                {
+                    'fc2': {'weight': tensor, 'bias': tensor},
+                    'fc1': {'weight': tensor, 'bias': tensor},
+                    'encoder.4': {'weight': tensor, 'bias': None},
+                }
+        """
+        if not self.layer_weight_gradients:
+            return None
+
+        result = {}
+        for layer_name in self.layer_weight_gradients:
+            result[layer_name] = {
+                "weight": self.layer_weight_gradients[layer_name],
+                "bias": self.layer_bias_gradients.get(layer_name),
+            }
+        return result
 
     def get_last_layer_gradients(self) -> Optional[Dict[str, Optional[torch.Tensor]]]:
         """
-        Get the captured gradients from the last layer.
+        Get the captured gradients from the last layer only.
+        This is a convenience method for backward compatibility.
 
         Returns:
             Dictionary containing 'weight' and 'bias' gradients, or None if not captured yet
         """
-        if self.last_layer_weight_gradients is None:
+        all_gradients = self.get_layer_gradients()
+        if all_gradients is None:
             return None
 
-        return {
-            "weight": self.last_layer_weight_gradients,
-            "bias": self.last_layer_bias_gradients,
-        }
+        # Get the last layer (fc2 by default)
+        if "fc2" in all_gradients:
+            return all_gradients["fc2"]
+
+        # If fc2 not found, return the last captured layer
+        if all_gradients:
+            last_layer_name = list(all_gradients.keys())[-1]
+            return all_gradients[last_layer_name]
+
+        return None
 
     def enable_feature_capture(self):
         """Enable capturing of activations and intermediate features."""
@@ -172,22 +241,34 @@ class FeatureCollector:
         metadata: General metadata about the collection
     """
 
-    def __init__(self, subsequence_length: int = 10):
+    def __init__(self, subsequence_length: int = 10, store_mode: str = "both"):
+        """
+        Initialize the FeatureCollector.
+
+        Args:
+            subsequence_length: Length of each subsequence
+            store_mode: What gradients to store:
+                       - "normalized_only": Only store normalized gradients (saves ~50% memory)
+                       - "both": Store both weight and normalized gradients
+        """
         # Group features by scene (FloorPlan)
         self.scenes: Dict[str, Dict[str, List]] = {}
         # Store image paths for each scene
         self.image_paths: Dict[str, List[str]] = {}
         self.subsequence_length = subsequence_length
+        self.store_mode = store_mode
         self.metadata: Dict = {
             "image_size": (120, 120),
             "num_scenes": 0,
             "total_samples": 0,
             "subsequence_length": subsequence_length,
+            "gradient_format": "multi_layer",  # New format: gradients stored as {layer_name: tensor, ...}
+            "store_mode": store_mode,
         }
 
     def add_features(
         self,
-        features: Optional[Dict[str, Optional[torch.Tensor]]],
+        features: Optional[Dict[str, Dict[str, Optional[torch.Tensor]]]],
         scene_id: str,
         image_path: Optional[str] = None,
     ):
@@ -195,7 +276,9 @@ class FeatureCollector:
         Add features from a forward/backward pass, grouped by scene.
 
         Args:
-            features: Dictionary from model.get_last_layer_gradients() with 'weight' and 'bias' keys
+            features: Dictionary from model.get_layer_gradients() with structure:
+                     {layer_name: {'weight': tensor, 'bias': tensor}, ...}
+                     Example: {'fc2': {'weight': tensor, 'bias': tensor}, 'fc1': {...}}
             scene_id: Scene identifier (e.g., "Kitchen/FloorPlan1")
             image_path: Optional path to the source image for reference
         """
@@ -211,24 +294,36 @@ class FeatureCollector:
 
         # Store on CPU to save GPU memory
         if features is not None:
-            weight_grad = features.get("weight")
-            bias_grad = features.get("bias")
+            # Multi-layer format: features is {layer_name: {'weight': tensor, 'bias': tensor}, ...}
+            # Store as dict per sample: {'fc2': weight_tensor, 'fc1': weight_tensor, ...}
+            weight_grads_dict = {}
+            bias_grads_dict = {}
+            normalized_grads_dict = {}
 
-            if weight_grad is not None:
-                self.scenes[scene_id]["weight_gradients"].append(weight_grad.cpu())
-            if bias_grad is not None:
-                self.scenes[scene_id]["bias_gradients"].append(bias_grad.cpu())
+            for layer_name, layer_grads in features.items():
+                weight_grad = layer_grads.get("weight")
+                bias_grad = layer_grads.get("bias")
 
-            # Compute normalized gradient: weight_grad / (bias_grad + 1e-8)
-            if weight_grad is not None and bias_grad is not None:
-                # Expand bias_grad to match weight_grad dimensions for broadcasting
-                # weight_grad shape: [output_size, hidden_size]
-                # bias_grad shape: [output_size]
-                # Expand bias to [output_size, 1] for broadcasting
-                bias_expanded = bias_grad.unsqueeze(1)  # [output_size, 1]
-                normalized_grad = weight_grad / (bias_expanded + 1e-8)
+                # Store weight gradients only if mode is "both"
+                if self.store_mode == "both":
+                    if weight_grad is not None:
+                        weight_grads_dict[layer_name] = weight_grad.cpu()
+                    if bias_grad is not None:
+                        bias_grads_dict[layer_name] = bias_grad.cpu()
+
+                # Compute normalized gradient: weight_grad / (bias_grad + 1e-8)
+                if weight_grad is not None and bias_grad is not None:
+                    bias_expanded = bias_grad.unsqueeze(1)
+                    normalized_grad = weight_grad / (bias_expanded + 1e-8)
+                    normalized_grads_dict[layer_name] = normalized_grad.cpu()
+
+            if weight_grads_dict:
+                self.scenes[scene_id]["weight_gradients"].append(weight_grads_dict)
+            if bias_grads_dict:
+                self.scenes[scene_id]["bias_gradients"].append(bias_grads_dict)
+            if normalized_grads_dict:
                 self.scenes[scene_id]["normalized_gradients"].append(
-                    normalized_grad.cpu()
+                    normalized_grads_dict
                 )
 
         # Store image path if provided

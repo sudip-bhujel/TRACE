@@ -115,6 +115,7 @@ def create_hdf5_dataset(
         f.create_dataset(
             "images",
             shape=(num_steps, *image_shape),
+            maxshape=(None, *image_shape),  # Allow unlimited resize
             dtype=np.uint8,
             chunks=(1, *image_shape),
             compression=compression,
@@ -125,6 +126,7 @@ def create_hdf5_dataset(
         f.create_dataset(
             "gradients",
             shape=(num_steps, gradient_size),
+            maxshape=(None, gradient_size),  # Allow unlimited resize
             dtype=np.float16,
             chunks=(1, gradient_size),
             compression=compression,
@@ -135,6 +137,7 @@ def create_hdf5_dataset(
         f.create_dataset(
             "actions",
             shape=(num_steps,),
+            maxshape=(None,),  # Allow unlimited resize
             dtype=np.int8,
             compression=compression,
         )
@@ -143,6 +146,7 @@ def create_hdf5_dataset(
         f.create_dataset(
             "rewards",
             shape=(num_steps,),
+            maxshape=(None,),  # Allow unlimited resize
             dtype=np.float32,
             compression=compression,
         )
@@ -151,6 +155,7 @@ def create_hdf5_dataset(
         f.create_dataset(
             "episode_ids",
             shape=(num_steps,),
+            maxshape=(None,),  # Allow unlimited resize
             dtype=np.int32,
             compression=compression,
         )
@@ -159,6 +164,7 @@ def create_hdf5_dataset(
         f.create_dataset(
             "done",
             shape=(num_steps,),
+            maxshape=(None,),  # Allow unlimited resize
             dtype=np.bool_,
             compression=compression,
         )
@@ -359,7 +365,50 @@ if __name__ == "__main__":
         action="store_true",
         help="Run AI2-THOR in headless mode",
     )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to YAML config file (overrides other args)",
+    )
+    parser.add_argument(
+        "--scene",
+        type=str,
+        default="FloorPlan1",
+        help="AI2-THOR scene name",
+    )
     args = parser.parse_args()
+
+    # Load config from YAML if provided
+    if args.config:
+        try:
+            from pathlib import Path
+
+            from omegaconf import OmegaConf
+
+            if Path(args.config).exists():
+                cfg = OmegaConf.load(args.config)
+                print(f"Loaded config from {args.config}")
+
+                # Extract settings from config
+                env_cfg = cfg.get("environment", {})
+                model_cfg = cfg.get("model", {})
+                capture_cfg = cfg.get("capture", {})
+
+                # Apply config values
+                args.scene = env_cfg.get("scene", args.scene)
+                args.max_steps = env_cfg.get("max_steps", args.max_steps)
+                args.headless = env_cfg.get("headless", args.headless)
+                args.checkpoint = model_cfg.get("checkpoint", args.checkpoint)
+                args.num_trajectories = capture_cfg.get(
+                    "num_trajectories", args.num_trajectories
+                )
+                args.save_path = capture_cfg.get("save_path", args.save_path)
+                args.layers = capture_cfg.get("gradient_layers", args.layers)
+            else:
+                print(f"Config file not found: {args.config}, using CLI args")
+        except ImportError:
+            print("OmegaConf not installed, using CLI args")
 
     print("=" * 60)
     print("Efficient Gradient Capture for PPO Agent")
@@ -373,9 +422,9 @@ if __name__ == "__main__":
     model = load_model(args.checkpoint)
 
     # Create environment
-    print("\nInitializing AI2-THOR environment...")
+    print(f"\nInitializing AI2-THOR environment (scene={args.scene})...")
     env = AI2THORNavEnv(
-        scene="FloorPlan1",
+        scene=args.scene,
         image_size=(84, 84),
         max_steps=args.max_steps,
         headless=args.headless,

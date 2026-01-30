@@ -19,3 +19,4 @@ dqn/
 generator/
 attacker_new/
 victim_new/
+trajectory_data/
