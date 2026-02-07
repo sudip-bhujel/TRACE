@@ -1,378 +1,139 @@
-"""
-Dataset for loading gradient sequences and corresponding images.
+from typing import List, Optional, Tuple
 
-This module provides a PyTorch Dataset that loads gradient sequences
-from the collected features and pairs them with the original images.
-"""
-
-import pickle
-import sys
-from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
-from typing import List, Tuple
-
-import numpy as np
+import h5py
 import torch
-from PIL import Image
-from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm
-
-# Add parent directory to path to import from lsr
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from torch.utils.data import Dataset
 
 
-def load_image(image_path: str, size: Tuple[int, int] = (120, 120)) -> torch.Tensor:
-    """Load and preprocess a single image."""
-    img = Image.open(image_path).convert("L")
-    img = img.resize(size)
-    img_array = np.array(img, dtype=np.float32) / 255.0
-    return torch.from_numpy(img_array)
-
-
-def load_images_batch(
-    image_paths: List[str], size: Tuple[int, int] = (120, 120), num_workers: int = 8
-) -> List[torch.Tensor]:
-    """Load multiple images in parallel."""
-
-    def load_single(path):
-        try:
-            img = Image.open(path).convert("L")
-            img = img.resize(size)
-            return torch.from_numpy(np.array(img, dtype=np.float32) / 255.0)
-        except Exception:
-            return None
-
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        images = list(executor.map(load_single, image_paths))
-
-    return images
-
-
-class GradientSequenceDataset(Dataset):
+class TemporalGradientDataset(Dataset):
     """
-    Dataset that yields subsequences of gradients and corresponding images.
+    Dataset that creates sequences of consecutive frames from episodes.
 
-    Each sample contains:
-    - gradients: Tensor of shape (seq_len, 64, 512) - normalized gradients
-    - images: Tensor of shape (seq_len, 120, 120) - grayscale images
-
-    All data is preloaded into memory to avoid multiprocessing serialization issues.
+    Each sample is a window of T consecutive (gradient, image, action) tuples
+    from the same episode.
     """
 
     def __init__(
         self,
-        features_path: str,
-        use_normalized_gradients: bool = True,
-        preload_images: bool = True,
+        h5_path: str,
+        sequence_length: int = 8,
+        stride: int = 4,
+        gradient_dim: Optional[int] = None,
     ):
         """
-        Initialize dataset from collected features.
+        Initialize dataset with lazy loading for gradients.
 
         Args:
-            features_path: Path to the pickle file containing collected features
-            use_normalized_gradients: If True, use normalized gradients (weight/bias)
-                                     If False, use weight gradients only
-            preload_images: If True, preload all images into memory (faster but uses more RAM)
+            h5_path: Path to HDF5 file with gradients
+            sequence_length: Number of consecutive frames per sample (T)
+            stride: Step size between consecutive windows
+            gradient_dim: Optional limit on gradient dimensions
         """
-        self.use_normalized_gradients = use_normalized_gradients
-        self.preload_images = preload_images
+        self.sequence_length = sequence_length
+        self.stride = stride
+        self.gradient_dim = gradient_dim
+        self.h5_path = h5_path
 
-        # Load the features data
-        print(f"Loading features from {features_path}...")
-        with open(features_path, "rb") as f:
-            data = pickle.load(f)
+        print(f"Loading data from {h5_path} (lazy loading for gradients)...")
 
-        # Handle both FeatureCollector object and raw dict
-        if hasattr(data, "metadata"):
-            # It's a FeatureCollector object
-            metadata = data.metadata
-            scenes = data.scenes
-            image_paths_dict = data.image_paths
-            subsequence_length = data.subsequence_length
-        else:
-            # It's a raw dictionary
-            metadata = data.get("metadata", {})
-            scenes = data.get("scenes", {})
-            image_paths_dict = data.get(
-                "image_paths", {}
-            )  # Separate dict for image paths
-            subsequence_length = metadata.get("subsequence_length", 10)
+        # Open HDF5 file temporarily to get metadata and load small arrays
+        with h5py.File(h5_path, "r") as h5_file:
+            # Keep gradient dataset shape for later
+            self.gradient_shape = h5_file["gradients"].shape
 
-        print(f"Loaded features from {features_path}")
-        print(f"  - Total scenes: {metadata.get('num_scenes', len(scenes))}")
-        print(f"  - Total samples: {metadata.get('total_samples', 'unknown')}")
-
-        # Debug: Show structure of first scene
-        if scenes:
-            first_scene_id = list(scenes.keys())[0]
-            first_scene = scenes[first_scene_id]
-            print(
-                f"\n  DEBUG - First scene '{first_scene_id}' keys: {list(first_scene.keys())}"
+            # Load smaller arrays into memory (images, actions, etc.)
+            # Images: 23k * 3 * 84 * 84 * 1 byte = ~470 MB - fits in memory
+            self.images = (
+                torch.tensor(h5_file["images"][:], dtype=torch.float32) / 255.0
             )
-            for key, value in first_scene.items():
-                if isinstance(value, list):
-                    print(f"    {key}: list of {len(value)} items")
-                    if value and hasattr(value[0], "shape"):
-                        print(f"      First item shape: {value[0].shape}")
-                else:
-                    print(f"    {key}: {type(value)}")
+            self.actions = torch.tensor(h5_file["actions"][:], dtype=torch.long)
+            self.episode_ids = torch.tensor(h5_file["episode_ids"][:], dtype=torch.long)
+            self.done = torch.tensor(h5_file["done"][:], dtype=torch.bool)
 
-            # Check image_paths_dict
-            if first_scene_id in image_paths_dict:
-                print(
-                    f"    image_paths (from separate dict): list of {len(image_paths_dict[first_scene_id])} items"
-                )
+        # Build sequence indices: (start_idx, end_idx) for valid windows
+        self.sequence_indices = self._build_sequence_indices()
 
-        # Preload all subsequences into memory to avoid multiprocessing serialization issues
-        self.subsequences = []
-        self.subsequence_length = subsequence_length
+        print(
+            f"Dataset initialized: {len(self)} sequences, "
+            f"seq_len={sequence_length}, stride={stride}"
+        )
+        if gradient_dim is not None:
+            print(f"  Gradient dim limited to {gradient_dim:,}")
 
-        print("Preloading subsequences into memory...")
-        print(f"  Using {16} threads for parallel image loading")
-        scene_ids = list(scenes.keys())
-        skipped_scenes = 0
+        # File handle will be opened per-worker (for multiprocessing)
+        self._h5_file = None
+        self._gradients_dataset = None
 
-        for scene_id in tqdm(scene_ids, desc="Loading scenes"):
-            scene_data = scenes[scene_id]
+    def _ensure_h5_open(self):
+        """Open HDF5 file if not already open (per-worker lazy initialization)."""
+        if self._h5_file is None:
+            self._h5_file = h5py.File(self.h5_path, "r")
+            self._gradients_dataset = self._h5_file["gradients"]
 
-            # Get gradients for this scene
-            weight_gradients = scene_data.get("weight_gradients", [])
-            normalized_gradients = scene_data.get("normalized_gradients", [])
+    def __del__(self):
+        """Close HDF5 file when dataset is deleted."""
+        if hasattr(self, "_h5_file") and self._h5_file is not None:
+            self._h5_file.close()
+            self._h5_file = None
+            self._gradients_dataset = None
 
-            # Image paths are stored in a separate dictionary
-            image_paths = image_paths_dict.get(scene_id, [])
+    def _build_sequence_indices(self) -> List[Tuple[int, int]]:
+        """Build list of valid sequence start/end indices."""
+        indices = []
 
-            if not weight_gradients:
-                skipped_scenes += 1
-                continue
+        # Group by episode
+        unique_episodes = self.episode_ids.unique()
 
-            if not image_paths:
-                skipped_scenes += 1
-                continue
+        for ep_id in unique_episodes:
+            # Find all steps belonging to this episode
+            ep_mask = self.episode_ids == ep_id
+            ep_indices = torch.where(ep_mask)[0]
 
-            # Make sure we have matching lengths
-            num_gradients = len(weight_gradients)
-            num_images = len(image_paths)
-            num_to_use = min(num_gradients, num_images)
+            if len(ep_indices) < self.sequence_length:
+                continue  # Episode too short
 
-            if num_to_use < subsequence_length:
-                skipped_scenes += 1
-                continue
+            # Create windows with stride
+            for start in range(
+                0, len(ep_indices) - self.sequence_length + 1, self.stride
+            ):
+                # Get the actual global indices for this window
+                window_indices = ep_indices[start : start + self.sequence_length]
 
-            # Load ALL images for this scene in parallel (much faster!)
-            if preload_images:
-                all_images = load_images_batch(
-                    image_paths[:num_to_use], size=(120, 120), num_workers=16
-                )
-                # Check for failed loads
-                if any(img is None for img in all_images):
-                    skipped_scenes += 1
-                    continue
+                # Check if indices are consecutive (no gaps in episode)
+                if len(window_indices) == self.sequence_length:
+                    # Check consecutive
+                    diffs = window_indices[1:] - window_indices[:-1]
+                    if torch.all(diffs == 1):
+                        start_idx = window_indices[0].item()
+                        end_idx = window_indices[-1].item()
+                        indices.append((start_idx, end_idx + 1))
 
-            # Split into subsequences
-            num_subsequences = num_to_use // subsequence_length
-
-            for subseq_idx in range(num_subsequences):
-                start_idx = subseq_idx * subsequence_length
-                end_idx = start_idx + subsequence_length
-
-                # Extract gradients for this subsequence
-                if use_normalized_gradients and normalized_gradients:
-                    gradients = normalized_gradients[start_idx:end_idx]
-                else:
-                    gradients = weight_gradients[start_idx:end_idx]
-
-                subseq_paths = image_paths[start_idx:end_idx]
-
-                # Skip if we don't have enough data
-                if (
-                    len(gradients) != subsequence_length
-                    or len(subseq_paths) != subsequence_length
-                ):
-                    continue
-
-                # Stack gradients into tensor and detach/clone to avoid shared storage
-                gradient_tensor = torch.stack(
-                    [
-                        (
-                            g.detach().clone()
-                            if isinstance(g, torch.Tensor)
-                            else torch.tensor(g)
-                        )
-                        for g in gradients
-                    ]
-                )  # (seq_len, 64, 512)
-
-                # Get preloaded images for this subsequence
-                if preload_images:
-                    subseq_images = all_images[start_idx:end_idx]
-                    image_tensor = torch.stack(subseq_images)  # (seq_len, 120, 120)
-                    self.subsequences.append(
-                        {
-                            "gradients": gradient_tensor,
-                            "images": image_tensor,
-                        }
-                    )
-                else:
-                    self.subsequences.append(
-                        {
-                            "gradients": gradient_tensor,
-                            "image_paths": subseq_paths,
-                        }
-                    )
-
-        if skipped_scenes > 0:
-            print(f"  Skipped {skipped_scenes} scenes with insufficient data")
-
-        print(f"Loaded {len(self.subsequences)} subsequences from {features_path}")
-        if use_normalized_gradients:
-            print("  Using normalized gradients")
-        else:
-            print("  Using weight gradients only")
-        print(f"  Subsequence length: {self.subsequence_length}")
+        return indices
 
     def __len__(self) -> int:
-        return len(self.subsequences)
+        return len(self.sequence_indices)
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
-        Get a subsequence.
+        Get a sequence of T consecutive frames.
 
         Returns:
-            gradients: Tensor of shape (seq_len, 64, 512)
-            images: Tensor of shape (seq_len, 120, 120)
+            gradients: (T, gradient_dim)
+            images: (T, 3, H, W)
+            actions: (T,)
         """
-        subseq = self.subsequences[idx]
-        gradients = subseq["gradients"]
+        start_idx, end_idx = self.sequence_indices[idx]
 
-        if self.preload_images:
-            images = subseq["images"]
-        else:
-            # Load images on-the-fly
-            images = torch.stack([load_image(p) for p in subseq["image_paths"]])
+        # Ensure HDF5 file is open in this worker
+        self._ensure_h5_open()
 
-        return gradients, images
+        # Lazy load gradients from HDF5 (only this slice, not entire array)
+        gradients_np = self._gradients_dataset[start_idx:end_idx]
+        if self.gradient_dim is not None and self.gradient_dim < gradients_np.shape[1]:
+            gradients_np = gradients_np[:, : self.gradient_dim]
+        gradients = torch.tensor(gradients_np, dtype=torch.float32)
 
+        images = self.images[start_idx:end_idx]
+        actions = self.actions[start_idx:end_idx]
 
-def create_dataloaders(
-    features_path: str,
-    batch_size: int = 4,
-    train_split: float = 0.9,
-    num_workers: int = 0,  # Default to 0 to avoid multiprocessing issues
-    use_normalized_gradients: bool = True,
-    preload_images: bool = True,
-) -> Tuple[DataLoader, DataLoader]:
-    """
-    Create train and validation dataloaders.
-
-    Args:
-        features_path: Path to collected features
-        batch_size: Batch size
-        train_split: Fraction of data for training
-        num_workers: Number of dataloader workers (0 = main process only)
-        use_normalized_gradients: Whether to use normalized gradients
-        preload_images: Whether to preload all images into memory
-
-    Returns:
-        train_loader, val_loader
-    """
-    # Create dataset
-    dataset = GradientSequenceDataset(
-        features_path=features_path,
-        use_normalized_gradients=use_normalized_gradients,
-        preload_images=preload_images,
-    )
-
-    # Split dataset
-    train_size = int(len(dataset) * train_split)
-    val_size = len(dataset) - train_size
-
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        dataset,
-        [train_size, val_size],
-        generator=torch.Generator().manual_seed(42),
-    )
-
-    print(f"\nDataset split:")
-    print(f"  Training subsequences: {len(train_dataset)}")
-    print(f"  Validation subsequences: {len(val_dataset)}")
-    print(f"  Batch size: {batch_size}")
-
-    # Create dataloaders
-    # Use num_workers=0 by default to avoid multiprocessing serialization issues
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True if num_workers == 0 else False,
-    )
-
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True if num_workers == 0 else False,
-    )
-
-    return train_loader, val_loader
-
-
-# Test the dataset
-if __name__ == "__main__":
-    print("=" * 80)
-    print("Testing Gradient Sequence Dataset")
-    print("=" * 80)
-
-    # Load dataset
-    features_path = "features/all_scenes.pkl"
-
-    try:
-        dataset = GradientSequenceDataset(
-            features_path,
-            use_normalized_gradients=True,
-            preload_images=True,
-        )
-
-        print(f"\nDataset statistics:")
-        print(f"  Total subsequences: {len(dataset)}")
-
-        # Get first sample
-        gradients, images = dataset[0]
-
-        print(f"\nSample data shapes:")
-        print(f"  Gradients: {gradients.shape}")
-        print(f"    (sequence_length, 64, 512) - normalized gradients")
-        print(f"  Images: {images.shape}")
-        print(f"    (sequence_length, 120, 120)")
-
-        # Create dataloaders
-        print("\n" + "=" * 80)
-        print("Creating DataLoaders")
-        print("=" * 80)
-
-        train_loader, val_loader = create_dataloaders(
-            features_path,
-            batch_size=4,
-            train_split=0.8,
-            num_workers=0,  # Use 0 for testing
-            use_normalized_gradients=True,
-            preload_images=True,
-        )
-
-        # Test a batch
-        for batch_gradients, batch_images in train_loader:
-            print(f"\nBatch shapes:")
-            print(f"  Gradients: {batch_gradients.shape}")
-            print(f"    (batch_size, sequence_length, 64, 512)")
-            print(f"  Images: {batch_images.shape}")
-            print(f"    (batch_size, sequence_length, 120, 120)")
-            break
-
-        print("\n✅ Dataset and DataLoader working correctly!")
-
-    except FileNotFoundError:
-        print(f"\n❌ Error: Could not find {features_path}")
-        print("   Please run the gradient collection first:")
-        print("   uv run python -m lsr.lsr")
+        return gradients, images, actions

@@ -20,3 +20,6 @@ generator/
 attacker_new/
 victim_new/
 trajectory_data/
+
+wandb/
+.env

@@ -9,6 +9,7 @@ dependencies = [
     "allenact>=0.5.4",
     "allenact-plugins[navigation,robothor]>=0.5.4",
     "h5py>=3.15.1",
+    "lpips>=0.1.4",
     "matplotlib>=3.10.7",
     "numpy>=2.3.4",
     "omegaconf>=2.3.0",
