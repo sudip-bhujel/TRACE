@@ -164,10 +164,13 @@ class ResidualImageDecoder(nn.Module):
 
 class UNetImageDecoder(nn.Module):
     """
-    U-Net style decoder with internal skip connections.
+    Improved U-Net style decoder with multi-level skip connections.
 
-    Creates an internal encoder-decoder structure with skip connections
-    that help preserve spatial information and fine details.
+    Features:
+    - Larger initial spatial size (image_size // 4) for better detail
+    - Residual blocks at each decoder level
+    - Multi-level skip connections for feature reuse
+    - Optional attention at bottleneck for global context
     """
 
     def __init__(
@@ -175,39 +178,61 @@ class UNetImageDecoder(nn.Module):
         latent_dim: int = 512,
         image_size: int = 84,
         num_actions: int = 5,
+        use_attention: bool = True,
     ):
         super().__init__()
 
         self.image_size = image_size
-        self.init_size = image_size // 8  # Start smaller for U-Net
+        self.init_size = image_size // 4  # 21
 
         # Project to initial feature map
-        self.fc = nn.Linear(latent_dim, 512 * self.init_size * self.init_size)
+        self.fc = nn.Linear(latent_dim, 256 * self.init_size * self.init_size)
 
-        # Encoder (contracting path within decoder)
+        # Encoder path (creates features for skip connections)
         self.enc1 = nn.Sequential(
-            nn.Conv2d(512, 256, 3, padding=1),
+            nn.Conv2d(256, 256, 3, padding=1),
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
+            ResidualBlock2d(256),
         )
 
-        # Decoder (expanding path)
-        self.up1 = nn.ConvTranspose2d(256, 256, 4, stride=2, padding=1)
-        self.dec1 = nn.Sequential(
-            nn.Conv2d(512, 128, 3, padding=1),  # 256 + 256 skip
+        self.enc2 = nn.Sequential(
+            nn.Conv2d(256, 128, 3, stride=2, padding=1),  # Downsample: 21 -> 10
             nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
+            ResidualBlock2d(128),
         )
 
-        self.up2 = nn.ConvTranspose2d(128, 128, 4, stride=2, padding=1)
+        # Bottleneck with optional attention
+        self.use_attention = use_attention
+        if use_attention:
+            self.attention = nn.MultiheadAttention(
+                embed_dim=128, num_heads=4, batch_first=True
+            )
+        self.bottleneck = nn.Sequential(
+            ResidualBlock2d(128),
+            ResidualBlock2d(128),
+        )
+
+        # Decoder path with skip connections
+        self.up1 = nn.ConvTranspose2d(128, 128, 4, stride=2, padding=1)  # 10 -> 20
+        self.dec1 = nn.Sequential(
+            nn.Conv2d(128 + 256, 128, 3, padding=1),  # Concat with enc1 skip
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            ResidualBlock2d(128),
+        )
+
+        self.up2 = nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1)  # 21 -> 42
         self.dec2 = nn.Sequential(
-            nn.Conv2d(128, 64, 3, padding=1),
+            nn.Conv2d(64, 64, 3, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
+            ResidualBlock2d(64),
         )
 
-        self.up3 = nn.ConvTranspose2d(64, 64, 4, stride=2, padding=1)
-        self.dec3 = nn.Sequential(
+        # Final output layer
+        self.final = nn.Sequential(
             nn.Conv2d(64, 32, 3, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
@@ -226,23 +251,45 @@ class UNetImageDecoder(nn.Module):
         else:
             x_flat = x
 
-        # Initial projection
+        # Initial projection: (B*T, latent_dim) -> (B*T, 256, 21, 21)
         h = self.fc(x_flat)
-        h = h.view(-1, 512, self.init_size, self.init_size)
+        h = h.view(-1, 256, self.init_size, self.init_size)
 
-        # Encoder
-        e1 = self.enc1(h)  # Save for skip
+        # Encoder with skip connections
+        e1 = self.enc1(h)  # (B*T, 256, 21, 21) - save for skip
+        e2 = self.enc2(e1)  # (B*T, 128, 10, 10)
+
+        # Bottleneck with optional attention
+        if self.use_attention:
+            b, c, h_size, w_size = e2.shape
+            e2_flat = e2.view(b, c, -1).permute(0, 2, 1)  # (B, H*W, C)
+            e2_attn, _ = self.attention(e2_flat, e2_flat, e2_flat)
+            e2 = e2_attn.permute(0, 2, 1).view(b, c, h_size, w_size)
+
+        bottleneck = self.bottleneck(e2)  # (B*T, 128, 10, 10)
 
         # Decoder with skip connections
-        d1 = self.up1(e1)
-        d1 = torch.cat([d1, F.interpolate(e1, size=d1.shape[2:])], dim=1)
-        d1 = self.dec1(d1)
+        d1 = self.up1(bottleneck)  # (B*T, 128, 20, 20)
+        # Resize e1 to match d1 for skip connection
+        e1_resized = F.interpolate(
+            e1, size=d1.shape[2:], mode="bilinear", align_corners=False
+        )
+        d1 = torch.cat([d1, e1_resized], dim=1)  # (B*T, 128+256, 20, 20)
+        d1 = self.dec1(d1)  # (B*T, 128, 20, 20)
 
-        d2 = self.up2(d1)
-        d2 = self.dec2(d2)
+        d2 = self.up2(d1)  # (B*T, 64, 40, 40)
+        d2 = self.dec2(d2)  # (B*T, 64, 40, 40)
 
-        d3 = self.up3(d2)
-        images = self.dec3(d3)
+        images = self.final(d2)  # (B*T, 3, 40, 40)
+
+        # Resize to exact target size
+        if images.shape[-1] != self.image_size:
+            images = F.interpolate(
+                images,
+                size=(self.image_size, self.image_size),
+                mode="bilinear",
+                align_corners=False,
+            )
 
         actions = self.action_head(x_flat)
 

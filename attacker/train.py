@@ -60,19 +60,42 @@ def train_epoch(
             loss, loss_dict = criterion(pred_images, images, pred_actions, actions)
             loss = loss / accumulation_steps
 
+        # NaN detection - skip bad batches to prevent training corruption
+        if torch.isnan(loss) or torch.isinf(loss):
+            print("Warning: NaN/Inf loss detected, skipping batch")
+            optimizer.zero_grad()
+            continue
+
         # Backward
         if scaler is not None:
             scaler.scale(loss).backward()
             if (pbar.n + 1) % accumulation_steps == 0:
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                scaler.step(optimizer)
+                # Check for NaN gradients before stepping
+                valid_grads = True
+                for param in model.parameters():
+                    if param.grad is not None and (
+                        torch.isnan(param.grad).any() or torch.isinf(param.grad).any()
+                    ):
+                        valid_grads = False
+                        break
+                if valid_grads:
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), max_norm=0.5
+                    )  # Tighter clipping
+                    scaler.step(optimizer)
+                else:
+                    print(
+                        "Warning: NaN/Inf gradients detected, skipping optimizer step"
+                    )
                 scaler.update()
                 optimizer.zero_grad()
         else:
             loss.backward()
             if (pbar.n + 1) % accumulation_steps == 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), max_norm=0.5
+                )  # Tighter clipping
                 optimizer.step()
                 optimizer.zero_grad()
 

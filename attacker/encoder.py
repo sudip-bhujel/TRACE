@@ -405,6 +405,170 @@ class MoEGradientEncoder(nn.Module):
         return output
 
 
+class StructuredGradientEncoder(nn.Module):
+    """
+    Structure-aware gradient encoder that processes CNN and FC gradients separately.
+
+    This encoder exploits the known structure of the victim network (ActorCritic)
+    by slicing the flattened gradients into meaningful components:
+    - CNN encoder gradients (conv + batchnorm layers): spatial features
+    - FC layer gradients: high-level semantic features
+    - Head gradients (policy + value): action/value specific features
+
+    The slices are based on ActorCritic architecture:
+    - encoder.* (CNN): 0 → 76,256 (76,256 params)
+    - fc.* (FC): 76,256 → 3,353,568 (3,277,312 params)
+    - policy + value (Heads): 3,353,568 → 3,356,646 (3,078 params)
+
+    Note: If gradient_dim < total_params, only available gradients are used.
+    """
+
+    # ActorCritic gradient boundaries (cumulative end positions)
+    CNN_END = 76_256  # encoder.* layers end
+    FC_END = 3_353_568  # fc.* layers end
+    HEAD_END = 3_356_646  # policy + value end
+
+    def __init__(
+        self,
+        gradient_dim: int,
+        latent_dim: int = 512,
+        hidden_dim: int = 1024,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+
+        self.gradient_dim = gradient_dim
+        self.latent_dim = latent_dim
+
+        # Compute actual slice sizes based on gradient_dim limit
+        self.cnn_size = min(self.CNN_END, gradient_dim)
+        self.fc_size = min(self.FC_END, gradient_dim) - self.cnn_size
+        self.head_size = max(0, min(self.HEAD_END, gradient_dim) - self.FC_END)
+
+        # CNN gradient encoder (76K params -> hidden_dim)
+        # Processes spatially-organized gradients from conv layers
+        self.cnn_encoder = nn.Sequential(
+            nn.Linear(self.cnn_size, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+        )
+
+        # FC gradient encoder (up to 3.2M params -> hidden_dim)
+        # Processes dense gradients from FC layer
+        if self.fc_size > 0:
+            self.fc_encoder = nn.Sequential(
+                nn.Linear(self.fc_size, hidden_dim * 2),
+                nn.LayerNorm(hidden_dim * 2),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim * 2, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+            )
+        else:
+            self.fc_encoder = None
+
+        # Head gradient encoder (3K params -> hidden_dim // 4)
+        # Processes action/value specific gradients
+        if self.head_size > 0:
+            self.head_encoder = nn.Sequential(
+                nn.Linear(self.head_size, hidden_dim // 4),
+                nn.LayerNorm(hidden_dim // 4),
+                nn.GELU(),
+            )
+            head_output_dim = hidden_dim // 4
+        else:
+            self.head_encoder = None
+            head_output_dim = 0
+
+        # Cross-attention fusion between CNN and FC features
+        self.fusion_attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=8,
+            dropout=dropout,
+            batch_first=True,
+        )
+
+        # Final projection to latent space
+        fusion_input_dim = hidden_dim * 2 + head_output_dim  # CNN + FC + Head
+        self.final_projection = nn.Sequential(
+            nn.Linear(fusion_input_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, latent_dim),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (B, T, gradient_dim) or (B, gradient_dim)
+        Returns:
+            latents: (B, T, latent_dim) or (B, latent_dim)
+        """
+        has_time_dim = x.dim() == 3
+
+        if has_time_dim:
+            B, T, D = x.shape
+            x = x.reshape(B * T, D)
+        else:
+            B = x.shape[0]
+
+        # Slice gradients into components
+        cnn_grads = x[:, : self.cnn_size]
+        fc_grads = (
+            x[:, self.cnn_size : self.cnn_size + self.fc_size]
+            if self.fc_size > 0
+            else None
+        )
+        head_grads = (
+            x[:, self.FC_END : self.FC_END + self.head_size]
+            if self.head_size > 0
+            else None
+        )
+
+        # Encode each component
+        cnn_features = self.cnn_encoder(cnn_grads)  # (B*T, hidden_dim)
+
+        if fc_grads is not None and self.fc_encoder is not None:
+            fc_features = self.fc_encoder(fc_grads)  # (B*T, hidden_dim)
+        else:
+            fc_features = torch.zeros_like(cnn_features)
+
+        if head_grads is not None and self.head_encoder is not None:
+            head_features = self.head_encoder(head_grads)  # (B*T, hidden_dim // 4)
+        else:
+            head_features = None
+
+        # Cross-attention fusion: CNN attends to FC features
+        # Reshape for attention: (B*T, 1, hidden_dim)
+        cnn_query = cnn_features.unsqueeze(1)
+        fc_kv = fc_features.unsqueeze(1)
+
+        fused_cnn, _ = self.fusion_attention(cnn_query, fc_kv, fc_kv)
+        fused_cnn = fused_cnn.squeeze(1)  # (B*T, hidden_dim)
+
+        # Concatenate all features
+        if head_features is not None:
+            combined = torch.cat([fused_cnn, fc_features, head_features], dim=-1)
+        else:
+            # Pad if no head features
+            padding = torch.zeros(fused_cnn.shape[0], 0, device=x.device)
+            combined = torch.cat([fused_cnn, fc_features, padding], dim=-1)
+
+        # Final projection
+        latents = self.final_projection(combined)
+
+        if has_time_dim:
+            latents = latents.view(B, T, -1)
+
+        return latents
+
+
 def get_encoder(
     encoder_type: str,
     gradient_dim: int,
@@ -433,6 +597,7 @@ def get_encoder(
         "gated": GatedGradientEncoder,
         "hierarchical": HierarchicalGradientEncoder,
         "moe": MoEGradientEncoder,
+        "structured": StructuredGradientEncoder,
     }
 
     if encoder_type not in encoders:
