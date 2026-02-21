@@ -1,0 +1,139 @@
+# Gradient Capture Configuration
+# Usage: python -m ppo.capture_gradients --config config/capture/capture_108.yaml
+
+# Environment settings
+environment:
+  scenes: [
+      # kitchen 1 to 27
+      "FloorPlan1",
+      "FloorPlan2",
+      "FloorPlan3",
+      "FloorPlan4",
+      "FloorPlan5",
+      "FloorPlan6",
+      "FloorPlan7",
+      "FloorPlan8",
+      "FloorPlan9",
+      "FloorPlan10",
+      "FloorPlan11",
+      "FloorPlan12",
+      "FloorPlan13",
+      "FloorPlan14",
+      "FloorPlan15",
+      "FloorPlan16",
+      "FloorPlan17",
+      "FloorPlan18",
+      "FloorPlan19",
+      "FloorPlan20",
+      "FloorPlan21",
+      "FloorPlan22",
+      "FloorPlan23",
+      "FloorPlan24",
+      "FloorPlan25",
+      "FloorPlan26",
+      "FloorPlan27",
+      # living rooms 201 to 227
+      "FloorPlan201",
+      "FloorPlan202",
+      "FloorPlan203",
+      "FloorPlan204",
+      "FloorPlan205",
+      "FloorPlan206",
+      "FloorPlan207",
+      "FloorPlan208",
+      "FloorPlan209",
+      "FloorPlan210",
+      "FloorPlan211",
+      "FloorPlan212",
+      "FloorPlan213",
+      "FloorPlan214",
+      "FloorPlan215",
+      "FloorPlan216",
+      "FloorPlan217",
+      "FloorPlan218",
+      "FloorPlan219",
+      "FloorPlan220",
+      "FloorPlan221",
+      "FloorPlan222",
+      "FloorPlan223",
+      "FloorPlan224",
+      "FloorPlan225",
+      "FloorPlan226",
+      "FloorPlan227",
+      # bedrooms 301 to 327
+      "FloorPlan301",
+      "FloorPlan302",
+      "FloorPlan303",
+      "FloorPlan304",
+      "FloorPlan305",
+      "FloorPlan306",
+      "FloorPlan307",
+      "FloorPlan308",
+      "FloorPlan309",
+      "FloorPlan310",
+      "FloorPlan311",
+      "FloorPlan312",
+      "FloorPlan313",
+      "FloorPlan314",
+      "FloorPlan315",
+      "FloorPlan316",
+      "FloorPlan317",
+      "FloorPlan318",
+      "FloorPlan319",
+      "FloorPlan320",
+      "FloorPlan321",
+      "FloorPlan322",
+      "FloorPlan323",
+      "FloorPlan324",
+      "FloorPlan325",
+      "FloorPlan326",
+      "FloorPlan327",
+      # bathrooms 401 to 427
+      "FloorPlan401",
+      "FloorPlan402",
+      "FloorPlan403",
+      "FloorPlan404",
+      "FloorPlan405",
+      "FloorPlan406",
+      "FloorPlan407",
+      "FloorPlan408",
+      "FloorPlan409",
+      "FloorPlan410",
+      "FloorPlan411",
+      "FloorPlan412",
+      "FloorPlan413",
+      "FloorPlan414",
+      "FloorPlan415",
+      "FloorPlan416",
+      "FloorPlan417",
+      "FloorPlan418",
+      "FloorPlan419",
+      "FloorPlan420",
+      "FloorPlan421",
+      "FloorPlan422",
+      "FloorPlan423",
+      "FloorPlan424",
+      "FloorPlan425",
+      "FloorPlan426",
+      "FloorPlan427",
+    ]
+  image_size: [84, 84]
+  max_steps: 100
+  headless: false
+
+# Model settings
+model:
+  checkpoint: "ckpts/ppo_5/ppo_ai2thor_1000.pt" # keep this same as ppo_5
+  num_actions: 5
+
+# Capture settings
+capture:
+  num_trajectories: 1080 # Fallback if steps_per_scene not used
+  steps_per_scene: 1000 # 1000 steps per scene × 108 scenes = 1,080,000 total (UNIFORM)
+  gradient_layers: null # null = all layers
+  save_path: "trajectory_data/gradients_108.h5"
+  compression: "gzip"
+  shuffle_scenes: false # Not used in uniform mode
+
+# Device settings
+device: "auto"

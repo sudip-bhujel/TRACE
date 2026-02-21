@@ -10,9 +10,8 @@ For each step in a trajectory, it saves:
 - Gradients of the loss w.r.t. model parameters
 """
 
-import argparse
 import os
-from pathlib import Path
+import sys
 from typing import Dict, List, Optional, Tuple
 
 import h5py
@@ -465,11 +464,11 @@ def capture_uniform_per_scene(
 
     # Print summary
     print(f"\n{'=' * 60}")
-    print(f"Uniform Capture Complete")
+    print("Uniform Capture Complete")
     print(f"{'=' * 60}")
     print(f"Total steps: {step_idx:,}")
     print(f"Steps per scene: {steps_per_scene}")
-    print(f"Scene distribution:")
+    print("Scene distribution:")
     for scene in scenes:
         print(
             f"  {scene}: {scene_stats[scene]['steps']} steps, {scene_stats[scene]['episodes']} eps"
@@ -489,176 +488,96 @@ def print_file_info(save_path: str):
         file_size_mb = os.path.getsize(save_path) / (1024 * 1024)
         print(f"Size: {file_size_mb:.1f} MB")
 
-        print(f"\nMetadata:")
+        print("\nMetadata:")
         for key, value in f.attrs.items():
             print(f"  {key}: {value}")
 
-        print(f"\nDatasets:")
+        print("\nDatasets:")
         for key in f.keys():
             ds = f[key]
             size_mb = ds.nbytes / (1024 * 1024)
             print(f"  {key}: shape={ds.shape}, dtype={ds.dtype}, size={size_mb:.1f} MB")
 
 
-# ------------------------------
-# Main Entry
-# ------------------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Capture gradients (efficient)")
-    parser.add_argument(
-        "--checkpoint",
-        type=str,
-        default="checkpoints/ppo_ai2thor_final.pt",
-        help="Path to model checkpoint",
-    )
-    parser.add_argument(
-        "--num_trajectories",
-        type=int,
-        default=100,
-        help="Number of trajectories to capture",
-    )
-    parser.add_argument(
-        "--max_steps",
-        type=int,
-        default=200,
-        help="Maximum steps per episode",
-    )
-    parser.add_argument(
-        "--save_path",
-        type=str,
-        default="trajectory_data/gradients.h5",
-        help="Path to save HDF5 file",
-    )
-    parser.add_argument(
-        "--layers",
-        type=str,
-        nargs="+",
-        default=None,
-        help="Specific layers to capture (e.g., 'fc policy value'). Default: all",
-    )
-    parser.add_argument(
-        "--headless",
-        action="store_true",
-        help="Run AI2-THOR in headless mode",
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default=None,
-        help="Path to YAML config file (overrides other args)",
-    )
-    parser.add_argument(
-        "--scene",
-        type=str,
-        default="FloorPlan1",
-        help="AI2-THOR scene name (or first scene if using config with multiple scenes)",
-    )
-    args = parser.parse_args()
+    assert len(sys.argv) > 1, "Usage: python capture.py <config_path>"
 
-    # Default values
-    scenes = [args.scene]  # Default to single scene from args
+    cfg = OmegaConf.load(sys.argv[1])
 
-    # Load config from YAML if provided
-    if args.config:
-        try:
-            if Path(args.config).exists():
-                cfg = OmegaConf.load(args.config)
-                print(f"Loaded config from {args.config}")
+    # Extract settings from config
+    env_cfg = cfg.get("environment", {})
+    model_cfg = cfg.get("model", {})
+    capture_cfg = cfg.get("capture", {})
 
-                # Extract settings from config
-                env_cfg = cfg.get("environment", {})
-                model_cfg = cfg.get("model", {})
-                capture_cfg = cfg.get("capture", {})
-
-                # Apply config values - support both single scene and scenes list
-                if "scenes" in env_cfg:
-                    scenes = list(env_cfg.get("scenes"))
-                elif "scene" in env_cfg:
-                    scenes = [env_cfg.get("scene")]
-
-                args.max_steps = env_cfg.get("max_steps", args.max_steps)
-                args.headless = env_cfg.get("headless", args.headless)
-                args.checkpoint = model_cfg.get("checkpoint", args.checkpoint)
-                args.num_trajectories = capture_cfg.get(
-                    "num_trajectories", args.num_trajectories
-                )
-                args.save_path = capture_cfg.get("save_path", args.save_path)
-                args.layers = capture_cfg.get("gradient_layers", args.layers)
-            else:
-                print(f"Config file not found: {args.config}, using CLI args")
-        except ImportError:
-            print("OmegaConf not installed, using CLI args")
+    if "scenes" in env_cfg:
+        scenes = list(env_cfg.get("scenes"))
+    elif "scene" in env_cfg:
+        scenes = [env_cfg.get("scene")]
 
     print("=" * 60)
     print("Efficient Gradient Capture for PPO Agent")
     print("=" * 60)
     print(f"Scenes: {scenes}")
-    print(f"Trajectories: {args.num_trajectories}")
-    print(f"Checkpoint: {args.checkpoint}")
+    print(f"Trajectories: {capture_cfg.get('num_trajectories')}")
+    print(f"Checkpoint: {model_cfg.get('checkpoint')}")
 
     # Create directory
-    os.makedirs(os.path.dirname(args.save_path) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(capture_cfg.get("save_path")) or ".", exist_ok=True)
 
     # Load model
-    print(f"\nLoading model from: {args.checkpoint}")
-    model = load_model(args.checkpoint)
+    print(f"\nLoading model from: {model_cfg.get('checkpoint')}")
+    model = load_model(
+        model_cfg.get("checkpoint"), num_actions=model_cfg.get("num_actions", 5)
+    )
 
     # Create environment with first scene (will switch during capture)
     print(f"\nInitializing AI2-THOR environment (starting scene={scenes[0]})...")
     env = AI2THORNavEnv(
         scene=scenes[0],
         image_size=(84, 84),
-        max_steps=args.max_steps,
-        headless=args.headless,
+        max_steps=env_cfg.get("max_steps"),
+        headless=env_cfg.get("headless"),
     )
 
     # Check for uniform capture mode
-    steps_per_scene = None
-    if args.config:
-        try:
-            if Path(args.config).exists():
-                cfg = OmegaConf.load(args.config)
-                capture_cfg = cfg.get("capture", {})
-                steps_per_scene = capture_cfg.get("steps_per_scene", None)
-        except ImportError:
-            pass
+    steps_per_scene = capture_cfg.get("steps_per_scene", None)
 
     try:
         if steps_per_scene and len(scenes) > 1:
             # Uniform capture mode
             print(f"\n[UNIFORM MODE] Capturing {steps_per_scene} steps per scene...")
-            if args.layers:
-                print(f"Capturing layers: {args.layers}")
+            if capture_cfg.get("gradient_layers"):
+                print(f"Capturing layers: {capture_cfg.get('gradient_layers')}")
 
             total_steps = capture_uniform_per_scene(
                 model=model,
                 env=env,
-                save_path=args.save_path,
+                save_path=capture_cfg.get("save_path"),
                 scenes=scenes,
                 steps_per_scene=steps_per_scene,
-                max_steps_per_episode=args.max_steps,
-                gradient_layers=args.layers,
+                max_steps_per_episode=env_cfg.get("max_steps"),
+                gradient_layers=capture_cfg.get("gradient_layers"),
             )
         else:
             # Standard trajectory-based capture
             print(
-                f"\nCapturing {args.num_trajectories} trajectories across {len(scenes)} scene(s)..."
+                f"\nCapturing {capture_cfg.get('num_trajectories')} trajectories across {len(scenes)} scene(s)..."
             )
-            if args.layers:
-                print(f"Capturing layers: {args.layers}")
+            if capture_cfg.get("gradient_layers"):
+                print(f"Capturing layers: {capture_cfg.get('gradient_layers')}")
 
             total_steps = capture_and_save_streaming(
                 model=model,
                 env=env,
-                save_path=args.save_path,
-                num_trajectories=args.num_trajectories,
-                max_steps=args.max_steps,
-                gradient_layers=args.layers,
+                save_path=capture_cfg.get("save_path"),
+                num_trajectories=capture_cfg.get("num_trajectories"),
+                max_steps=env_cfg.get("max_steps"),
+                gradient_layers=capture_cfg.get("gradient_layers"),
                 scenes=scenes,
             )
 
         # Print summary
-        print_file_info(args.save_path)
+        print_file_info(capture_cfg.get("save_path"))
 
     finally:
         env.close()
