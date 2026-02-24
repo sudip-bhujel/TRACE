@@ -30,6 +30,7 @@ class TemporalGradientInversion(nn.Module):
         decoder_type: str = "basic",
         dropout: float = 0.1,
         image_size: int = 84,
+        **decoder_kwargs,
     ):
         super().__init__()
 
@@ -59,11 +60,12 @@ class TemporalGradientInversion(nn.Module):
             latent_dim=latent_dim,
             image_size=image_size,
             num_actions=num_actions,
+            **decoder_kwargs,
         )
 
     def forward(
         self, gradients: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
         Args:
             gradients: (B, T, gradient_dim)
@@ -71,6 +73,7 @@ class TemporalGradientInversion(nn.Module):
             images: (B, T, 3, H, W)
             actions: (B, T, num_actions)
             latents: (B, T, latent_dim)
+            token_logits: (B*T, num_tokens, codebook_size) or None
         """
         # Encode each gradient
         latents = self.gradient_encoder(gradients)  # (B, T, latent_dim)
@@ -79,8 +82,14 @@ class TemporalGradientInversion(nn.Module):
         latents = self.temporal_transformer(latents)  # (B, T, latent_dim)
 
         # Decode to images and actions
-        images, actions = self.image_decoder(
-            latents
-        )  # (B, T, 3, H, W), (B, T, num_actions)
+        # VQ-GAN decoder returns (images, actions, token_logits)
+        # Standard decoders return (images, actions)
+        output = self.image_decoder(latents)
 
-        return images, actions, latents
+        if len(output) == 3:
+            images, actions, token_logits = output
+        else:
+            images, actions = output
+            token_logits = None
+
+        return images, actions, latents, token_logits

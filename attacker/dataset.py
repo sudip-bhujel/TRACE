@@ -4,6 +4,8 @@ import h5py
 import torch
 from torch.utils.data import Dataset
 
+from attacker.analyze_gradients import get_layer_map
+
 
 class TemporalGradientDataset(Dataset):
     """
@@ -19,6 +21,7 @@ class TemporalGradientDataset(Dataset):
         sequence_length: int = 8,
         stride: int = 4,
         gradient_dim: Optional[int] = None,
+        gradient_layers: Optional[List[str]] = None,
     ):
         """
         Initialize dataset with lazy loading for gradients.
@@ -28,11 +31,53 @@ class TemporalGradientDataset(Dataset):
             sequence_length: Number of consecutive frames per sample (T)
             stride: Step size between consecutive windows
             gradient_dim: Optional limit on gradient dimensions
+            gradient_layers: Optional list of layer names to select. When set,
+                only gradients from these layers are extracted and concatenated.
+                Takes priority over gradient_dim.
         """
         self.sequence_length = sequence_length
         self.stride = stride
         self.gradient_dim = gradient_dim
+        self.gradient_layers = gradient_layers
         self.h5_path = h5_path
+
+        # Build layer index slices if gradient_layers is specified
+        self._layer_slices: Optional[List[Tuple[int, int]]] = None
+        if gradient_layers is not None:
+            if gradient_dim is not None:
+                print(
+                    "Warning: Both gradient_layers and gradient_dim are set. "
+                    "gradient_layers takes priority; gradient_dim is ignored."
+                )
+            layer_map, _total = get_layer_map()
+
+            # Get actual gradient dim from H5 to clamp partially-captured layers
+            with h5py.File(h5_path, "r") as h5_tmp:
+                actual_grad_dim = h5_tmp["gradients"].shape[1]
+
+            self._layer_slices = []
+            for name in gradient_layers:
+                if name not in layer_map:
+                    raise ValueError(
+                        f"Layer '{name}' not found in model. "
+                        f"Available layers: {list(layer_map.keys())}"
+                    )
+                info = layer_map[name]
+                start = info["start"]
+                # Clamp end to actual gradient dim in H5 (handles truncated captures)
+                end = min(info["end"], actual_grad_dim)
+                if start >= actual_grad_dim:
+                    print(
+                        f"Warning: Layer '{name}' is beyond captured gradient "
+                        f"dim ({actual_grad_dim:,}), skipping."
+                    )
+                    continue
+                self._layer_slices.append((start, end))
+            self._effective_gradient_dim = sum(
+                end - start for start, end in self._layer_slices
+            )
+        else:
+            self._effective_gradient_dim = None  # computed after loading
 
         print(f"Loading data from {h5_path} (lazy loading for gradients)...")
 
@@ -50,15 +95,28 @@ class TemporalGradientDataset(Dataset):
             self.episode_ids = torch.tensor(h5_file["episode_ids"][:], dtype=torch.long)
             self.done = torch.tensor(h5_file["done"][:], dtype=torch.bool)
 
+        # Compute effective gradient dim for non-layer-selection mode
+        if self._effective_gradient_dim is None:
+            if gradient_dim is not None and gradient_dim < self.gradient_shape[1]:
+                self._effective_gradient_dim = gradient_dim
+            else:
+                self._effective_gradient_dim = self.gradient_shape[1]
+
         # Build sequence indices: (start_idx, end_idx) for valid windows
         self.sequence_indices = self._build_sequence_indices()
+
+        if gradient_layers is not None:
+            print(
+                f"  Using {len(gradient_layers)} selected layers "
+                f"({self._effective_gradient_dim:,} dims)"
+            )
+        elif gradient_dim is not None:
+            print(f"  Gradient dim limited to {gradient_dim:,}")
 
         print(
             f"Dataset initialized: {len(self)} sequences, "
             f"seq_len={sequence_length}, stride={stride}"
         )
-        if gradient_dim is not None:
-            print(f"  Gradient dim limited to {gradient_dim:,}")
 
         # File handle will be opened per-worker (for multiprocessing)
         self._h5_file = None
@@ -110,6 +168,11 @@ class TemporalGradientDataset(Dataset):
 
         return indices
 
+    @property
+    def effective_gradient_dim(self) -> int:
+        """The actual gradient dimension after layer selection or truncation."""
+        return self._effective_gradient_dim
+
     def __len__(self) -> int:
         return len(self.sequence_indices)
 
@@ -129,8 +192,18 @@ class TemporalGradientDataset(Dataset):
 
         # Lazy load gradients from HDF5 (only this slice, not entire array)
         gradients_np = self._gradients_dataset[start_idx:end_idx]
-        if self.gradient_dim is not None and self.gradient_dim < gradients_np.shape[1]:
+
+        if self._layer_slices is not None:
+            # Layer-name selection: extract and concatenate selected slices
+            import numpy as np
+
+            slices = [gradients_np[:, s:e] for s, e in self._layer_slices]
+            gradients_np = np.concatenate(slices, axis=1)
+        elif (
+            self.gradient_dim is not None and self.gradient_dim < gradients_np.shape[1]
+        ):
             gradients_np = gradients_np[:, : self.gradient_dim]
+
         gradients = torch.tensor(gradients_np, dtype=torch.float32)
 
         images = self.images[start_idx:end_idx]

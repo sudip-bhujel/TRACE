@@ -457,23 +457,33 @@ class StructuredGradientEncoder(nn.Module):
             nn.GELU(),
         )
 
-        # FC gradient encoder (up to 3.2M params -> hidden_dim)
-        # Processes dense gradients from FC layer
         if self.fc_size > 0:
+            self.fc_num_chunks = 1024
+            self.fc_chunk_size = (
+                self.fc_size + self.fc_num_chunks - 1
+            ) // self.fc_num_chunks
+            self.fc_padded_size = self.fc_num_chunks * self.fc_chunk_size
+
             self.fc_encoder = nn.Sequential(
-                nn.Linear(self.fc_size, hidden_dim * 2),
-                nn.LayerNorm(hidden_dim * 2),
+                nn.Conv1d(
+                    1,
+                    hidden_dim // 4,
+                    kernel_size=self.fc_chunk_size,
+                    stride=self.fc_chunk_size,
+                ),
+                nn.LayerNorm([hidden_dim // 4, self.fc_num_chunks]),
                 nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(hidden_dim * 2, hidden_dim),
+                nn.AdaptiveAvgPool1d(16),
+            )
+            self.fc_proj = nn.Sequential(
+                nn.Linear((hidden_dim // 4) * 16, hidden_dim),
                 nn.LayerNorm(hidden_dim),
                 nn.GELU(),
             )
         else:
             self.fc_encoder = None
+            self.fc_proj = None
 
-        # Head gradient encoder (3K params -> hidden_dim // 4)
-        # Processes action/value specific gradients
         if self.head_size > 0:
             self.head_encoder = nn.Sequential(
                 nn.Linear(self.head_size, hidden_dim // 4),
@@ -535,7 +545,25 @@ class StructuredGradientEncoder(nn.Module):
         cnn_features = self.cnn_encoder(cnn_grads)  # (B*T, hidden_dim)
 
         if fc_grads is not None and self.fc_encoder is not None:
-            fc_features = self.fc_encoder(fc_grads)  # (B*T, hidden_dim)
+            # Pad FC gradients to match chunked size
+            batch_size = fc_grads.shape[0]
+            if fc_grads.shape[1] < self.fc_padded_size:
+                padding = torch.zeros(
+                    batch_size,
+                    self.fc_padded_size - fc_grads.shape[1],
+                    device=fc_grads.device,
+                )
+                fc_grads_padded = torch.cat([fc_grads, padding], dim=1)
+            else:
+                fc_grads_padded = fc_grads[:, : self.fc_padded_size]
+
+            # Reshape for Conv1d: (B*T, 1, padded_size)
+            fc_grads_padded = fc_grads_padded.unsqueeze(1)
+
+            # Apply chunked conv + pool
+            fc_encoded = self.fc_encoder(fc_grads_padded)  # (B*T, hidden_dim//4, 16)
+            fc_encoded = fc_encoded.flatten(1)  # (B*T, hidden_dim//4 * 16)
+            fc_features = self.fc_proj(fc_encoded)  # (B*T, hidden_dim)
         else:
             fc_features = torch.zeros_like(cnn_features)
 

@@ -95,7 +95,7 @@ def evaluate_and_save_reconstructions(
         actions = actions[:1]
 
         with torch.no_grad():
-            pred_images, pred_actions, _ = model(gradients)
+            pred_images, pred_actions, _, _ = model(gradients)
 
         pred_images = pred_images.cpu()
         pred_labels = pred_actions.argmax(dim=-1).cpu()
@@ -160,6 +160,7 @@ def evaluate(
     sequence_length: int = 8,
     stride: int = 8,  # Non-overlapping for test
     gradient_dim: Optional[int] = None,
+    gradient_layers: Optional[List[str]] = None,
     device: str = "auto",
     batch_size: int = 1,
     # Model architecture params
@@ -190,13 +191,11 @@ def evaluate(
         sequence_length=sequence_length,
         stride=stride,
         gradient_dim=gradient_dim,
+        gradient_layers=gradient_layers,
     )
 
-    # Use limited dimension if specified, otherwise full gradient shape
-    if gradient_dim is not None and gradient_dim < dataset.gradient_shape[1]:
-        actual_gradient_dim = gradient_dim
-    else:
-        actual_gradient_dim = dataset.gradient_shape[1]
+    # Use effective gradient dim (handles both layer selection and dim truncation)
+    actual_gradient_dim = dataset.effective_gradient_dim
     num_actions = len(dataset.actions.unique())
 
     dataloader = DataLoader(
@@ -248,6 +247,11 @@ if __name__ == "__main__":
     eval_cfg = cfg.get("eval", {})
     output_cfg = cfg.get("output", {})
 
+    gradient_dim = data_cfg.get("gradient_dim", None)
+    gradient_layers = data_cfg.get("gradient_layers", None)
+    if gradient_layers is not None:
+        gradient_layers = list(gradient_layers)
+
     evaluate(
         checkpoint_path=eval_cfg.get("checkpoint"),
         h5_path=data_cfg.get("h5_path"),
@@ -255,7 +259,8 @@ if __name__ == "__main__":
         num_sequences=eval_cfg.get("num_sequences", 5),
         sequence_length=model_cfg.get("sequence_length", 8),
         stride=model_cfg.get("stride", 8),
-        gradient_dim=data_cfg.get("gradient_dim", None),
+        gradient_dim=gradient_dim,
+        gradient_layers=gradient_layers,
         device=cfg.get("device", "auto"),
         latent_dim=model_cfg.get("latent_dim", 512),
         num_transformer_layers=model_cfg.get("num_transformer_layers", 4),
