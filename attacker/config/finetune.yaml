@@ -1,0 +1,60 @@
+# Few-Shot Fine-Tuning Configuration
+# Fine-tune pretrained model on test-domain data for domain adaptation
+#
+# PREREQUISITE: Train base model first with:
+#   uv run -m attacker.train ./attacker/config/train.yaml
+#
+# Usage: uv run -m attacker.train ./attacker/config/finetune.yaml
+
+data:
+  h5_path: trajectory_data/eval_tf_108.h5
+  gradient_dim: 1048576 # 1M — must match base model
+  finetune_fraction: 0.1 # 10% of sequences per scene
+
+model:
+  sequence_length: 8
+  latent_dim: 1024
+  stride: 2
+  num_transformer_layers: 6
+  num_heads: 8
+  encoder_type: residual
+  decoder_type: residual
+  encoder_hidden_dims: [4096, 2048, 1024]
+  dropout: 0.1
+  use_flash_attention: true
+  # Load pretrained base model weights
+  pretrained_checkpoint: ckpts/attacker_1024/best_model.pt
+
+training:
+  num_epochs: 20
+  batch_size: 8
+  accumulation_steps: 4
+  learning_rate: 1e-5 # 10× lower than base training
+  weight_decay: 1e-5
+  num_workers: 4
+  lr_schedule: cosine
+  warmup_epochs: 2
+  min_lr: 1e-7
+
+loss:
+  mse_weight: 1.0
+  l1_weight: 0.5
+  action_weight: 0.1
+  temporal_weight: 0.1
+  lpips_weight: 0.2
+  lpips_net: vgg
+
+output:
+  save_dir: ckpts/attacker_1024_finetuned
+
+eval:
+  enabled: true
+  h5_path: trajectory_data/eval_tf_108.h5
+  num_sequences: 20
+
+wandb:
+  enabled: true
+  project: gradient-inversion
+  name: attacker_1024_finetuned
+  entity: gradinversion
+  tags: ["finetuned", "few-shot", "domain-adaptation"]

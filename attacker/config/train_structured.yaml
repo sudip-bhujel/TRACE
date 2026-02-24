@@ -1,0 +1,68 @@
+# Temporal Gradient Inversion with Structured Encoder
+# Usage: uv run -m attacker.train ./attacker/config/train_structured.yaml
+#
+# Key changes from train.yaml:
+# - Uses structured encoder that processes CNN/FC gradients separately
+# - Larger latent dimension (4096) for more information capacity
+# - Adjusted loss weights for better perceptual quality
+#
+# The structured encoder slices gradients based on ActorCritic architecture:
+# - CNN gradients (0-76K): conv + batchnorm layers
+# - FC gradients (76K-3.3M): dense layer
+# - Head gradients (3.3M+): policy + value heads
+
+device: auto
+
+data:
+  h5_path: trajectory_data/gradients_108_augmented.h5
+  gradient_dim: 3356646 # Full gradients (no truncation)
+
+model:
+  sequence_length: 8
+  latent_dim: 4096 # Larger for more information capacity
+  stride: 2
+  num_transformer_layers: 6
+  num_heads: 8
+  encoder_type: structured # NEW: Structure-aware gradient encoding
+  decoder_type: residual
+  dropout: 0.1
+  use_flash_attention: true
+
+training:
+  num_epochs: 100
+  batch_size: 8
+  accumulation_steps: 64
+  learning_rate: 5e-5
+  weight_decay: 1e-5
+  num_workers: 4
+
+  # Learning rate schedule
+  lr_schedule: cosine
+  warmup_epochs: 5
+  min_lr: 1e-6
+
+  # Regularization
+  gradient_noise_scale: 0.0
+
+loss:
+  mse_weight: 0.2 # Low to reduce blur
+  l1_weight: 0.3
+  action_weight: 0.1
+  temporal_weight: 0.1
+  lpips_weight: 0.5 # High for perceptual quality
+  lpips_net: vgg
+
+output:
+  save_dir: ckpts/attacker_structured
+
+eval:
+  enabled: true
+  h5_path: trajectory_data/eval_tf_108.h5
+  num_sequences: 20
+
+wandb:
+  enabled: true
+  project: gradient-inversion
+  name: attacker-train-structured
+  entity: gradinversion
+  tags: ["structured-encoder", "full-gradients", "4096-latent", "unet-decoder"]

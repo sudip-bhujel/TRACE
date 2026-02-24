@@ -1,5 +1,10 @@
-# Temporal Gradient Inversion Training Configuration
-# Usage: uv run -m attacker.train ./attacker/config/train.yaml
+# Temporal Gradient Inversion Training Configuration - U-Net Decoder
+# Usage: uv run -m attacker.train ./attacker/config/train_unet.yaml
+#
+# Changes from train.yaml:
+# - Uses U-Net decoder for better spatial detail preservation
+# - Lower MSE weight (0.5) to reduce blur
+# - Higher LPIPS weight (0.4) for sharper perceptual quality
 
 device: auto
 
@@ -14,7 +19,7 @@ model:
   num_transformer_layers: 6
   num_heads: 8
   encoder_type: residual # Options: basic, residual, bottleneck, gated, hierarchical, moe
-  decoder_type: residual # Options: basic, residual, unet, style
+  decoder_type: unet # U-Net for skip connections and better spatial details
   encoder_hidden_dims: [4096, 2048, 1024] # Only used for 'basic' encoder
   dropout: 0.1
   use_flash_attention: true
@@ -22,7 +27,7 @@ model:
 training:
   num_epochs: 100
   batch_size: 8
-  accumulation_steps: 6 # Effective batch size = batch_size * accumulation_steps * num_gpus
+  accumulation_steps: 8 # Effective batch size = batch_size * accumulation_steps * num_gpus
   learning_rate: 1e-4
   weight_decay: 1e-5
   num_workers: 4
@@ -36,17 +41,15 @@ training:
   gradient_noise_scale: 0.0 # Add noise to gradients for regularization
 
 loss:
-  mse_weight: 1.0
+  mse_weight: 0.5 # Lower to reduce blur
   l1_weight: 0.5
   action_weight: 0.1
   temporal_weight: 0.1 # Temporal smoothness loss
-  lpips_weight: 0.2 # Perceptual loss (requires lpips package)
+  lpips_weight: 0.4 # Higher perceptual loss for sharper details
   lpips_net: vgg # Options: vgg, alex, squeeze
-  dino_weight: 0.0 # DINOv2 semantic feature loss (0 = disabled)
-  dino_model: dinov2_vits14 # Options: dinov2_vits14, dinov2_vitb14, dinov2_vitl14
 
 output:
-  save_dir: ckpts/attacker_1024
+  save_dir: ckpts/attacker_unet
 
 eval:
   enabled: true
@@ -56,6 +59,6 @@ eval:
 wandb:
   enabled: true
   project: gradient-inversion
-  name: attacker-train-1024
+  name: attacker-train-unet
   entity: gradinversion
-  tags: ["augmented", "3x-data", "stride2", "1.2M-grads", "1024-latent"]
+  tags: ["unet-decoder", "high-lpips", "low-mse", "1024-latent"]

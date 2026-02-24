@@ -1,0 +1,33 @@
+# VQ-VAE Training Configuration
+# Usage: uv run -m attacker.train_vqvae ./attacker/config/train_vqvae.yaml
+
+data:
+  h5_path: trajectory_data/gradients_108_augmented.h5
+
+model:
+  codebook_size: 512
+  embedding_dim: 256
+  hidden_channels: 128
+  num_res_blocks: 2
+  commitment_cost: 0.25
+
+training:
+  num_epochs: 50
+  batch_size: 64
+  learning_rate: 3e-4
+  num_workers: 4
+
+loss:
+  mse_weight: 1.0
+  l1_weight: 0.5
+  lpips_weight: 0.5
+
+output:
+  save_dir: ckpts/vqvae
+
+wandb:
+  enabled: true
+  project: gradient-inversion
+  name: vqvae-training
+  entity: gradinversion
+  tags: ["vqvae", "codebook", "phase1"]

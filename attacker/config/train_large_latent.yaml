@@ -1,0 +1,64 @@
+# Temporal Gradient Inversion with Large Latent (Quick Win)
+# Usage: uv run -m attacker.train ./attacker/config/train_large_latent.yaml
+#
+# Changes from train.yaml:
+# - Larger latent dimension (4096 vs 1024) for more information capacity
+# - Lower MSE weight (0.2) to reduce blur
+# - Higher LPIPS weight (0.5) for better perceptual quality
+# - Keeps simple residual encoder (proven to work)
+
+device: auto
+
+data:
+  h5_path: trajectory_data/gradients_108_augmented.h5
+  gradient_dim: 1048576 # 1M
+
+model:
+  sequence_length: 8
+  latent_dim: 4096 # 4x larger for more information capacity
+  stride: 2
+  num_transformer_layers: 6
+  num_heads: 8
+  encoder_type: residual # Keep simpler encoder
+  decoder_type: residual # Proven decoder
+  dropout: 0.1
+  use_flash_attention: true
+
+training:
+  num_epochs: 100
+  batch_size: 8 # Increased to utilize H200 memory
+  accumulation_steps: 32 # After DDP: 32/8=4, effective batch = 8 * 4 * 8 = 256
+  learning_rate: 5e-5 # Reduced from 1e-4 to prevent NaN with larger model
+  weight_decay: 1e-5
+  num_workers: 4
+
+  # Learning rate schedule
+  lr_schedule: cosine
+  warmup_epochs: 5
+  min_lr: 1e-6
+
+  # Regularization
+  gradient_noise_scale: 0.0
+
+loss:
+  mse_weight: 0.2 # Low to reduce blur
+  l1_weight: 0.3
+  action_weight: 0.1
+  temporal_weight: 0.1
+  lpips_weight: 0.5 # High for perceptual quality
+  lpips_net: vgg
+
+output:
+  save_dir: ckpts/attacker_large_latent
+
+eval:
+  enabled: true
+  h5_path: trajectory_data/eval_tf_108.h5
+  num_sequences: 20
+
+wandb:
+  enabled: true
+  project: gradient-inversion
+  name: attacker-train-large-latent
+  entity: gradinversion
+  tags: ["large-latent", "4096", "low-mse", "high-lpips"]

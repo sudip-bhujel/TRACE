@@ -1,0 +1,26 @@
+# Temporal Gradient Inversion Evaluation Configuration
+# Usage: uv run -m attacker.evaluate ./attacker/config/eval.yaml
+
+device: auto
+
+data:
+  h5_path: trajectory_data/eval_tf_108.h5
+  gradient_dim: 1048576 # Must match training
+
+model:
+  # Architecture must match the trained checkpoint
+  sequence_length: 8
+  stride: 8 # Non-overlapping for evaluation
+  latent_dim: 1024
+  num_transformer_layers: 6
+  num_heads: 8
+  encoder_type: residual
+  decoder_type: residual
+  encoder_hidden_dims: [4096, 2048, 1024]
+
+eval:
+  checkpoint: ckpts/attacker_1024/best_model.pt
+  num_sequences: 20
+
+output:
+  save_dir: eval_results/attacker_1024
