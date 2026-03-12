@@ -1,0 +1,45 @@
+# Gradient Capture Configuration
+# Usage: python -m ppo.capture_gradients --config config/capture/capture_12_eval.yaml
+
+# Environment settings
+environment:
+  scenes: [
+      # kitchen 28 to 30
+      "FloorPlan28",
+      "FloorPlan29",
+      "FloorPlan30",
+      # living rooms 228 to 230
+      "FloorPlan228",
+      "FloorPlan229",
+      "FloorPlan230",
+      # bedrooms 328 to 330
+      "FloorPlan328",
+      "FloorPlan329",
+      "FloorPlan330",
+      # bathrooms 428 to 430
+      "FloorPlan428",
+      "FloorPlan429",
+      "FloorPlan430",
+    ]
+  image_size: [84, 84]
+  max_steps: 100
+  headless: false
+
+# Model settings
+model:
+  # checkpoint: "ckpts/ppo_5/ppo_ai2thor_1000.pt" # keep this same as ppo_5
+  checkpoint: "ckpts/victim/ppo_ai2thor_final.pt"
+  num_actions: 5
+
+# Capture settings
+capture:
+  num_trajectories: 48 # Fallback if steps_per_scene not used
+  steps_per_scene: 1000 # 1000 steps per scene x 12 scenes = 12000 total (UNIFORM)
+  gradient_layers: null # null = all layers
+  # save_path: "trajectory_data/gradients_12_eval.h5"
+  save_path: "trajectory_data/small/gradients_test.h5"
+  compression: "gzip"
+  shuffle_scenes: false # Not used in uniform mode
+
+# Device settings
+device: "auto"

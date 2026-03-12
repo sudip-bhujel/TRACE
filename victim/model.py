@@ -63,6 +63,7 @@ class ActorCritic(nn.Module):
             conv_block(in_channels, 32, k=8, s=4, p=2),
             conv_block(32, 64, k=4, s=2, p=1),
             conv_block(64, 64, k=3, s=1, p=1),
+            conv_block(64, 64, k=3, s=2, p=1),  # ! For smaller model
             nn.Flatten(),
         )
 

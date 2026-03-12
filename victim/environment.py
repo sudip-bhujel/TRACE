@@ -4,6 +4,7 @@ from typing import Dict, List, Tuple
 import cv2
 import numpy as np
 from ai2thor.controller import Controller
+from ai2thor.platform import CloudRendering
 
 
 class AI2THORNavEnv:
@@ -17,10 +18,14 @@ class AI2THORNavEnv:
 
     ACTIONS = [
         {"action": "MoveAhead"},
-        {"action": "RotateLeft", "degrees": 90},
-        {"action": "RotateRight", "degrees": 90},
-        {"action": "LookDown", "degrees": 30},
-        {"action": "LookUp", "degrees": 30},
+        # {"action": "RotateLeft", "degrees": 90},
+        # {"action": "RotateRight", "degrees": 90},
+        # {"action": "LookDown", "degrees": 30},
+        # {"action": "LookUp", "degrees": 30},
+        {"action": "RotateLeft", "degrees": 15},
+        {"action": "RotateRight", "degrees": 15},
+        {"action": "LookDown", "degrees": 15},
+        {"action": "LookUp", "degrees": 15},
     ]
 
     def __init__(
@@ -40,7 +45,8 @@ class AI2THORNavEnv:
         self.controller = Controller(
             scene=scene,
             gridSize=grid_size,
-            headless=headless,
+            # headless=headless,
+            platform=CloudRendering if headless else None,
         )
 
         # Try to initialize
@@ -161,7 +167,7 @@ class AI2THORNavEnv:
         except Exception:
             pass
 
-        headless = True
+        headless = False
         if hasattr(self.controller, "headless"):
             headless = self.controller.headless
 
@@ -172,7 +178,8 @@ class AI2THORNavEnv:
         self.controller = Controller(
             scene=self.scene,
             gridSize=self.grid_size,
-            headless=headless,
+            # headless=headless,
+            platform=CloudRendering if headless else None,
         )
         print("Controller restarted.")
 

@@ -1,5 +1,6 @@
 import os
 import random
+import sys
 from collections import defaultdict
 from typing import List
 
@@ -8,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
+from omegaconf import OmegaConf
 
 from victim.environment import AI2THORNavEnv
 from victim.model import ActorCritic, compute_gae
@@ -295,3 +297,81 @@ def plot_results(returns: List[float], save_path: str = "output/ppo_thor_results
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path, dpi=300)
     print(f"\nPlot saved as '{save_path}'")
+
+
+if __name__ == "__main__":
+    assert len(sys.argv) > 1, "Usage: python -m victim.train <config_path>"
+
+    cfg = OmegaConf.load(sys.argv[1])
+
+    # Extract settings from config
+    env_cfg = cfg.get("environment", {})
+    ppo_cfg = cfg.get("ppo", {})
+    train_cfg = cfg.get("training", {})
+    output_cfg = cfg.get("output", {})
+
+    if "scenes" in env_cfg:
+        scenes = list(env_cfg.get("scenes"))
+    elif "scene" in env_cfg:
+        scenes = [env_cfg.get("scene")]
+    else:
+        scenes = ["FloorPlan1"]
+
+    # Set seed
+    seed = train_cfg.get("seed", 42)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    # Create output directories
+    save_dir = output_cfg.get("save_dir", "ckpts/victim")
+    plot_path = output_cfg.get("plot_path", "output/victim_results.png")
+    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(plot_path) or ".", exist_ok=True)
+
+    # Print config summary
+    print("=" * 60)
+    print("Victim PPO Training Configuration")
+    print("=" * 60)
+    print(f"Scenes: {scenes}")
+    print(f"Total updates: {ppo_cfg.get('total_updates', 500)}")
+    print(f"Steps per update: {ppo_cfg.get('steps_per_update', 1024)}")
+    print(f"Headless: {env_cfg.get('headless', False)}")
+    print(f"Save dir: {save_dir}")
+    print("=" * 60)
+
+    # Create environment with first scene
+    print(f"\nInitializing AI2-THOR environment (starting scene={scenes[0]})...")
+    env = AI2THORNavEnv(
+        scene=scenes[0],
+        image_size=tuple(env_cfg.get("image_size", [84, 84])),
+        max_steps=env_cfg.get("max_steps", 200),
+        headless=env_cfg.get("headless", False),
+    )
+
+    try:
+        episode_rewards = train(
+            env,
+            total_updates=ppo_cfg.get("total_updates", 500),
+            steps_per_update=ppo_cfg.get("steps_per_update", 1024),
+            mini_batch_size=ppo_cfg.get("mini_batch_size", 64),
+            ppo_epochs=ppo_cfg.get("ppo_epochs", 4),
+            gamma=ppo_cfg.get("gamma", 0.99),
+            lam=ppo_cfg.get("gae_lambda", 0.95),
+            clip_eps=ppo_cfg.get("clip_eps", 0.2),
+            lr=ppo_cfg.get("learning_rate", 2.5e-4),
+            ent_coef=ppo_cfg.get("entropy_coef", 0.01),
+            vf_coef=ppo_cfg.get("value_coef", 0.5),
+            max_grad_norm=ppo_cfg.get("max_grad_norm", 0.5),
+            save_dir=save_dir,
+            resume_from=train_cfg.get("resume_from"),
+            scenes=scenes,
+        )
+    finally:
+        env.close()
+
+    # Plot results
+    if episode_rewards:
+        plot_results(episode_rewards, plot_path)
+
+    print("\nTraining complete!")

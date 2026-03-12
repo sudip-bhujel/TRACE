@@ -20,7 +20,7 @@ import torch
 import torch.nn.functional as F
 from omegaconf import OmegaConf
 
-from victim.env import AI2THORNavEnv
+from victim.environment import AI2THORNavEnv
 from victim.model import ActorCritic
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -349,7 +349,7 @@ def capture_uniform_per_scene(
     total_steps = steps_per_scene * len(scenes)
 
     print(
-        f"Uniform capture mode: {steps_per_scene} steps × {len(scenes)} scenes = {total_steps:,} total steps"
+        f"Uniform capture mode: {steps_per_scene} steps x {len(scenes)} scenes = {total_steps:,} total steps"
     )
     print(
         f"Gradient size: {gradient_size:,} values ({gradient_size * 2 / 1024:.1f} KB per step)"
@@ -437,7 +437,7 @@ def capture_uniform_per_scene(
             scene_stats[scene]["episodes"] = scene_episodes
             avg_reward = np.mean(scene_stats[scene]["rewards"])
             print(
-                f"  → {scene}: {scene_steps} steps, {scene_episodes} episodes, avg_reward={avg_reward:.2f}"
+                f"  -> {scene}: {scene_steps} steps, {scene_episodes} episodes, avg_reward={avg_reward:.2f}"
             )
 
         # Trim to actual size (should be exact, but just in case)
