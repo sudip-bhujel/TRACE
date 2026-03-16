@@ -289,7 +289,7 @@ def plot_results(returns: List[float], save_path: str = "output/ppo_thor_results
     plt.plot(running_avg, label="Average Reward (100 episodes)", color="red", lw=1)
     plt.xlabel("Episode")
     plt.ylabel("Reward")
-    plt.title("PPO Training on AI2-THOR Navigation")
+    # plt.title("PPO Training on AI2-THOR Navigation")
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
