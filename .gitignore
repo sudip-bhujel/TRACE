@@ -10,7 +10,7 @@ wheels/
 .venv
 .DS_Store
 
-data/
+# data/
 
 checkpoints/
 ckpts/
@@ -20,6 +20,8 @@ generator/
 attacker_new/
 victim_new/
 trajectory_data/
+paper/
+output/
 
 wandb/
 .env
