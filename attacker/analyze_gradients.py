@@ -55,17 +55,17 @@ def get_layer_map(num_actions: int = 5, hidden_size: int = 512):
 def categorize_layer(name: str) -> str:
     """Categorize a layer by its role in the model."""
     if "encoder.0" in name:
-        return "Conv1 (3→32, k=8, s=4)"
+        return "Conv1 (3->32, k=8, s=4)"
     elif "encoder.1" in name:
-        return "Conv2 (32→64, k=4, s=2)"
+        return "Conv2 (32->64, k=4, s=2)"
     elif "encoder.2" in name:
-        return "Conv3 (64→64, k=3, s=1)"
+        return "Conv3 (64->64, k=3, s=1)"
     elif "fc" in name:
-        return "FC (6400→512)"
+        return "FC (6400->512)"
     elif "policy" in name:
-        return "Policy Head (512→5)"
+        return "Policy Head (512->5)"
     elif "value" in name:
-        return "Value Head (512→1)"
+        return "Value Head (512->1)"
     return "Unknown"
 
 
@@ -308,9 +308,11 @@ def analyze_gradients(
                 end_vis,
                 alpha=0.1,
                 color=colors[i % len(colors)],
-                label=categorize_layer(name)
-                if ".weight" in name and "2" not in name
-                else None,
+                label=(
+                    categorize_layer(name)
+                    if ".weight" in name and "2" not in name
+                    else None
+                ),
             )
     axes[0].legend(loc="upper right", fontsize=7)
 
@@ -367,7 +369,7 @@ def analyze_gradients(
     print(f"\n  Encoder-only (first {encoder_end:,} dims):")
     print(f"    Variance coverage: {encoder_var / total_var:.1%}")
     print(
-        f"    Dimension reduction: {actual_grad_dim:,} → {encoder_end:,} ({encoder_end / actual_grad_dim:.1%})"
+        f"    Dimension reduction: {actual_grad_dim:,} -> {encoder_end:,} ({encoder_end / actual_grad_dim:.1%})"
     )
 
     # Save results
