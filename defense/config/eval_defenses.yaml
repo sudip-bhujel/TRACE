@@ -1,0 +1,73 @@
+# Defense Evaluation Configuration
+# Usage: uv run -m defense.evaluate defense/config/eval_defenses.yaml
+#
+# Evaluates reconstruction quality under various gradient defense
+# mechanisms and produces a comparison table + chart.
+
+device: auto
+
+data:
+  h5_path: trajectory_data/small/gradients_test_augmented.h5
+  gradient_dim: 936102
+
+model:
+  sequence_length: 8
+  latent_dim: 1024
+  stride: 8 # Non-overlapping for evaluation
+  num_transformer_layers: 6
+  num_heads: 8
+  encoder_type: residual
+  decoder_type: residual
+  encoder_hidden_dims: [4096, 2048, 1024]
+  dropout: 0.1
+
+eval:
+  checkpoint: ckpts/small/attacker_1024_aug_finetuned_10/best_model.pt
+  num_sequences: 20
+  enable_fid: false # Set true for full evaluation (slower)
+
+output:
+  save_dir: ckpts/small/attacker_1024_aug_finetuned_10/eval_results/defense
+
+# ---------------------------------------------------------------------------
+# Defense configurations
+# Each entry specifies a defense type and its parameters.
+# The evaluation always includes an undefended baseline automatically.
+# ---------------------------------------------------------------------------
+defenses:
+  # --- Gradient Pruning (top-k sparsification) ---
+  - type: pruning
+    keep_ratio: 0.9 # Keep 90%, prune 10%
+
+  - type: pruning
+    keep_ratio: 0.5 # Keep 50%, prune 50%
+
+  - type: pruning
+    keep_ratio: 0.1 # Keep 10%, prune 90%
+
+  # --- Gaussian Noise Injection ---
+  - type: noise
+    sigma: 0.001
+
+  - type: noise
+    sigma: 0.01
+
+  - type: noise
+    sigma: 0.1
+
+  # --- DP-SGD (clipping + calibrated noise) ---
+  - type: dpsgd
+    max_grad_norm: 1.0
+    noise_multiplier: 0.01
+
+  - type: dpsgd
+    max_grad_norm: 1.0
+    noise_multiplier: 0.1
+
+  - type: dpsgd
+    max_grad_norm: 1.0
+    noise_multiplier: 1.0
+
+  - type: dpsgd
+    max_grad_norm: 0.1
+    noise_multiplier: 0.1
