@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from attacker.models.decoder import get_decoder
 from attacker.models.encoder import get_encoder
-from attacker.models.transformer import CausalTemporalTransformer
+from attacker.models.transformer import TemporalTransformer
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -31,6 +31,7 @@ class TemporalGradientInversion(nn.Module):
         dropout: float = 0.1,
         image_size: int = 84,
         skip_transformer: bool = False,
+        is_causal: bool = True,
         **decoder_kwargs,
     ):
         super().__init__()
@@ -51,11 +52,12 @@ class TemporalGradientInversion(nn.Module):
         )
 
         if not skip_transformer:
-            self.temporal_transformer = CausalTemporalTransformer(
+            self.temporal_transformer = TemporalTransformer(
                 latent_dim=latent_dim,
                 num_layers=num_transformer_layers,
                 num_heads=num_heads,
                 dropout=dropout,
+                is_causal=is_causal,
             )
 
         # Use factory function to get decoder

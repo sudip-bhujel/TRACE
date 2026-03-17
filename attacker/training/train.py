@@ -850,6 +850,7 @@ def train(
     vae_model: str = "stabilityai/sd-vae-ft-mse",
     # Ablation: skip transformer
     skip_transformer: bool = False,
+    is_causal: bool = True,
     # Ablation: cap dataset size
     max_sequences: Optional[int] = None,
     # Temporal dropout: fraction of timesteps to mask (0.0 = disabled)
@@ -881,9 +882,9 @@ def train(
         master_process = ddp_rank == 0  # Only rank 0 logs/saves
         seed_offset = ddp_rank  # Each process gets a different seed
         # Scale down gradient accumulation per process
-        assert (
-            accumulation_steps % ddp_world_size == 0
-        ), f"accumulation_steps ({accumulation_steps}) must be divisible by world_size ({ddp_world_size})"
+        assert accumulation_steps % ddp_world_size == 0, (
+            f"accumulation_steps ({accumulation_steps}) must be divisible by world_size ({ddp_world_size})"
+        )
         accumulation_steps = accumulation_steps // ddp_world_size
     else:
         # Single GPU / CPU training
@@ -1025,6 +1026,7 @@ def train(
         decoder_type=decoder_type,
         dropout=dropout,
         skip_transformer=skip_transformer,
+        is_causal=is_causal,
         **decoder_kwargs,
     ).to(device)
 
@@ -1068,9 +1070,7 @@ def train(
         token_weight=token_weight,
         dino_weight=dino_weight,
         dino_model=dino_model,
-    ).to(
-        device
-    )  # Move to device for VGG buffers
+    ).to(device)  # Move to device for VGG buffers
 
     if master_process:
         print("\nLoss weights:")
@@ -1081,7 +1081,7 @@ def train(
         print(f"  DINOv2: {dino_weight} (model: {dino_model})")
         if gradient_mask_ratio > 0:
             print(
-                f"\nTemporal dropout: masking {gradient_mask_ratio*100:.0f}% of timesteps"
+                f"\nTemporal dropout: masking {gradient_mask_ratio * 100:.0f}% of timesteps"
             )
 
     # Load VQ-VAE encoder for target token computation (VQ-GAN mode)
@@ -1475,6 +1475,7 @@ if __name__ == "__main__":
         wandb.init(
             project=wandb_cfg.get("project", "gradient-inversion"),
             name=wandb_cfg.get("name", None),
+            group=wandb_cfg.get("group", None),
             entity=wandb_cfg.get("entity", None),
             config=OmegaConf.to_container(cfg, resolve=True),
         )
@@ -1529,6 +1530,7 @@ if __name__ == "__main__":
         vae_model=model_cfg.get("vae_model", "stabilityai/sd-vae-ft-mse"),
         # Ablation
         skip_transformer=model_cfg.get("skip_transformer", False),
+        is_causal=model_cfg.get("is_causal", True),
         max_sequences=data_cfg.get("max_sequences", None),
         gradient_mask_ratio=training_cfg.get("gradient_mask_ratio", 0.0),
     )

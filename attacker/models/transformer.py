@@ -13,9 +13,17 @@ class MultiHeadAttention(nn.Module):
     - Math attention (fallback)
     """
 
-    def __init__(self, latent_dim: int = 512, num_heads: int = 8, dropout: float = 0.1):
+    def __init__(
+        self,
+        latent_dim: int = 512,
+        num_heads: int = 8,
+        dropout: float = 0.1,
+        is_causal: bool = True,
+    ):
         super().__init__()
         assert latent_dim % num_heads == 0, "latent_dim must be divisible by num_heads"
+
+        self.is_causal = is_causal
 
         self.latent_dim = latent_dim
         self.num_heads = num_heads
@@ -48,7 +56,7 @@ class MultiHeadAttention(nn.Module):
             v,
             attn_mask=None,
             dropout_p=self.dropout if self.training else 0.0,
-            is_causal=False,  # Enables efficient causal masking
+            is_causal=self.is_causal,  # Enables efficient causal masking
         )
 
         # Reshape and project output
@@ -66,9 +74,10 @@ class TransformerBlock(nn.Module):
         num_heads: int = 8,
         ff_dim: int = 2048,
         dropout: float = 0.1,
+        is_causal: bool = True,
     ):
         super().__init__()
-        self.attention = MultiHeadAttention(latent_dim, num_heads, dropout)
+        self.attention = MultiHeadAttention(latent_dim, num_heads, dropout, is_causal)
         self.ffn = nn.Sequential(
             nn.Linear(latent_dim, ff_dim),
             nn.GELU(),
@@ -92,7 +101,7 @@ class TransformerBlock(nn.Module):
         return x
 
 
-class CausalTemporalTransformer(nn.Module):
+class TemporalTransformer(nn.Module):
     """
     Transformer with causal (autoregressive) attention using custom blocks.
 
@@ -109,6 +118,7 @@ class CausalTemporalTransformer(nn.Module):
         ff_dim: int = 2048,
         dropout: float = 0.1,
         max_seq_len: int = 32,
+        is_causal: bool = True,
     ):
         super().__init__()
 
@@ -128,6 +138,7 @@ class CausalTemporalTransformer(nn.Module):
                     num_heads=num_heads,
                     ff_dim=ff_dim,
                     dropout=dropout,
+                    is_causal=is_causal,
                 )
                 for _ in range(num_layers)
             ]
