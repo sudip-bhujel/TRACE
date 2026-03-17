@@ -1,0 +1,67 @@
+# Ablation: Policy + Value heads only
+# Tests whether the output heads alone carry sufficient information.
+# Policy head directly encodes action identity; value head encodes hidden state.
+# Usage: uv run -m attacker.training.train ./attacker/config/ablation/train_heads_only.yaml
+
+device: auto
+
+data:
+  h5_path: trajectory_data/small/gradients_train_augmented.h5
+  gradient_layers:
+    # Policy head (512 -> 5)
+    - policy.weight
+    - policy.bias
+    # Value head (512 -> 1)
+    - value.weight
+    - value.bias
+
+model:
+  sequence_length: 8
+  latent_dim: 1024
+  stride: 2
+  num_transformer_layers: 6
+  num_heads: 8
+  encoder_type: residual
+  decoder_type: residual
+  encoder_hidden_dims: [4096, 2048, 1024]
+  dropout: 0.1
+  use_flash_attention: true
+
+training:
+  num_epochs: 50
+  batch_size: 8
+  accumulation_steps: 8
+  learning_rate: 1e-4
+  weight_decay: 1e-5
+  num_workers: 4
+
+  lr_schedule: cosine
+  warmup_epochs: 5
+  min_lr: 1e-6
+
+  gradient_noise_scale: 0.0
+
+loss:
+  mse_weight: 1.0
+  l1_weight: 0.5
+  action_weight: 0.1
+  temporal_weight: 0.1
+  lpips_weight: 0.2
+  lpips_net: vgg
+  dino_weight: 0.0
+  dino_model: dinov2_vits14
+
+output:
+  save_dir: ckpts/small/ablation/heads_only
+
+eval:
+  enabled: true
+  h5_path: trajectory_data/small/gradients_test.h5
+  num_sequences: 100
+
+wandb:
+  enabled: true
+  project: gradient-inversion
+  name: small_ablation_heads_only
+  entity: gradinversion
+  tags: ["small", "ablation", "heads-only", "layer-selection"]

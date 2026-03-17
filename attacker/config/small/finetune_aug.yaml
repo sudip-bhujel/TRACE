@@ -2,14 +2,14 @@
 # Fine-tune pretrained model on test-domain data for domain adaptation
 #
 # PREREQUISITE: Train base model first with:
-#   python -m attacker.train ./attacker/config/train.yaml
+#   uv run -m attacker.training.train ./attacker/config/train.yaml
 #
-# Usage: python -m attacker.train ./attacker/config/finetune_dino.yaml
+# Usage: uv run -m attacker.training.train ./attacker/config/finetune.yaml
 
 data:
-  h5_path: trajectory_data/eval_tf_108.h5
-  gradient_dim: 1048576 # 1M — must match base model
-  finetune_fraction: 0.1 # 10% of sequences per scene
+  h5_path: trajectory_data/small/gradients_test_augmented.h5
+  gradient_dim: 936102
+  finetune_fraction: 0.6
 
 model:
   sequence_length: 8
@@ -23,13 +23,13 @@ model:
   dropout: 0.1
   use_flash_attention: true
   # Load pretrained base model weights
-  pretrained_checkpoint: ckpts/attacker_1024/best_model.pt
+  pretrained_checkpoint: ckpts/small/attacker_1024/best_model.pt
 
 training:
-  num_epochs: 20
+  num_epochs: 50
   batch_size: 8
   accumulation_steps: 4
-  learning_rate: 1e-5 # 10× lower than base training
+  learning_rate: 1e-5 # 10x lower than base training
   weight_decay: 1e-5
   num_workers: 4
   lr_schedule: cosine
@@ -43,20 +43,18 @@ loss:
   temporal_weight: 0.1
   lpips_weight: 0.2
   lpips_net: vgg
-  dino_weight: 0.5 # DINOv2 semantic loss for unseen object reconstruction
-  dino_model: dinov2_vits14
 
 output:
-  save_dir: ckpts/attacker_1024_finetuned_dino
+  save_dir: ckpts/small/attacker_1024_aug_finetuned_60
 
 eval:
   enabled: true
-  h5_path: trajectory_data/eval_tf_108.h5
+  h5_path: trajectory_data/small/gradients_test_augmented.h5
   num_sequences: 20
 
 wandb:
   enabled: true
   project: gradient-inversion
-  name: attacker_1024_finetuned_dino
+  name: attacker_1024_finetuned_40
   entity: gradinversion
-  tags: ["finetuned", "dino", "few-shot", "domain-adaptation"]
+  tags: ["finetuned", "few-shot", "domain-adaptation"]

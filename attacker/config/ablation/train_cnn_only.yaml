@@ -1,0 +1,88 @@
+# Ablation: CNN layers only (encoder convolution + BatchNorm gradients)
+# Tests whether CNN feature gradients alone are sufficient for reconstruction.
+# Usage: uv run -m attacker.training.train ./attacker/config/ablation/train_cnn_only.yaml
+
+device: auto
+
+data:
+  h5_path: trajectory_data/small/gradients_train_augmented.h5
+  gradient_layers:
+    # Conv1 (3->32, k=8, s=4)
+    - encoder.0.0.weight
+    - encoder.0.0.bias
+    - encoder.0.2.weight
+    - encoder.0.2.bias
+    - encoder.0.2.running_var
+    - encoder.0.2.running_mean
+    # Conv2 (32->64, k=4, s=2)
+    - encoder.1.0.weight
+    - encoder.1.0.bias
+    - encoder.1.2.weight
+    - encoder.1.2.bias
+    - encoder.1.2.running_var
+    - encoder.1.2.running_mean
+    # Conv3 (64->64, k=3, s=1)
+    - encoder.2.0.weight
+    - encoder.2.0.bias
+    - encoder.2.2.weight
+    - encoder.2.2.bias
+    - encoder.2.2.running_var
+    - encoder.2.2.running_mean
+    # Conv4 (64->64, k=3, s=2)
+    - encoder.3.0.weight
+    - encoder.3.0.bias
+    - encoder.3.2.weight
+    - encoder.3.2.bias
+    - encoder.3.2.running_var
+    - encoder.3.2.running_mean
+
+model:
+  sequence_length: 8
+  latent_dim: 1024
+  stride: 2
+  num_transformer_layers: 6
+  num_heads: 8
+  encoder_type: residual
+  decoder_type: residual
+  encoder_hidden_dims: [4096, 2048, 1024]
+  dropout: 0.1
+  use_flash_attention: true
+
+training:
+  num_epochs: 50
+  batch_size: 8
+  accumulation_steps: 8
+  learning_rate: 1e-4
+  weight_decay: 1e-5
+  num_workers: 4
+
+  lr_schedule: cosine
+  warmup_epochs: 5
+  min_lr: 1e-6
+
+  gradient_noise_scale: 0.0
+
+loss:
+  mse_weight: 1.0
+  l1_weight: 0.5
+  action_weight: 0.1
+  temporal_weight: 0.1
+  lpips_weight: 0.2
+  lpips_net: vgg
+  dino_weight: 0.0
+  dino_model: dinov2_vits14
+
+output:
+  save_dir: ckpts/small/ablation/cnn_only
+
+eval:
+  enabled: true
+  h5_path: trajectory_data/small/gradients_test.h5
+  num_sequences: 100
+
+wandb:
+  enabled: true
+  project: gradient-inversion
+  name: small_ablation_cnn_only
+  entity: gradinversion
+  tags: ["small", "ablation", "cnn-only", "layer-selection"]

@@ -4,11 +4,11 @@
 device: auto
 
 data:
-  h5_path: trajectory_data/gradients_108_augmented.h5
-  gradient_dim: 1048576 # 1M
+  h5_path: trajectory_data/small/gradients_train_augmented.h5
+  gradient_dim: 936102
 
 model:
-  sequence_length: 8
+  sequence_length: 4
   latent_dim: 1024
   stride: 2
   num_transformer_layers: 6
@@ -20,9 +20,9 @@ model:
   use_flash_attention: true
 
 training:
-  num_epochs: 100
+  num_epochs: 50
   batch_size: 8
-  accumulation_steps: 6 # Effective batch size = batch_size * accumulation_steps * num_gpus
+  accumulation_steps: 8 # Effective batch size = batch_size * accumulation_steps * num_gpus
   learning_rate: 1e-4
   weight_decay: 1e-5
   num_workers: 4
@@ -46,16 +46,16 @@ loss:
   dino_model: dinov2_vits14 # Options: dinov2_vits14, dinov2_vitb14, dinov2_vitl14
 
 output:
-  save_dir: ckpts/attacker_1024
+  save_dir: ckpts/small/ablation/t4
 
 eval:
   enabled: true
-  h5_path: trajectory_data/eval_tf_108.h5
-  num_sequences: 20
+  h5_path: trajectory_data/small/gradients_test.h5
+  num_sequences: 100
 
 wandb:
   enabled: true
   project: gradient-inversion
-  name: attacker-train-1024
+  name: small_ablation_t4
   entity: gradinversion
-  tags: ["augmented", "3x-data", "stride2", "1.2M-grads", "1024-latent"]
+  tags: ["small", "ablation", "t4"]

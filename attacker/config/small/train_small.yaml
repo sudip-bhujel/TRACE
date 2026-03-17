@@ -4,8 +4,8 @@
 device: auto
 
 data:
-  h5_path: trajectory_data/gradients_108_augmented.h5
-  gradient_dim: 1048576 # 1M
+  h5_path: trajectory_data/small/gradients_train_augmented.h5
+  gradient_dim: 936102
 
 model:
   sequence_length: 8
@@ -13,16 +13,16 @@ model:
   stride: 2
   num_transformer_layers: 6
   num_heads: 8
-  encoder_type: residual # Options: basic, residual, bottleneck, gated, hierarchical, moe
-  decoder_type: residual # Options: basic, residual, unet, style
+  encoder_type: residual # Options: basic, residual
+  decoder_type: residual # Options: basic, residual
   encoder_hidden_dims: [4096, 2048, 1024] # Only used for 'basic' encoder
   dropout: 0.1
   use_flash_attention: true
 
 training:
-  num_epochs: 100
+  num_epochs: 50
   batch_size: 8
-  accumulation_steps: 6 # Effective batch size = batch_size * accumulation_steps * num_gpus
+  accumulation_steps: 8 # Effective batch size = batch_size * accumulation_steps * num_gpus
   learning_rate: 1e-4
   weight_decay: 1e-5
   num_workers: 4
@@ -42,20 +42,18 @@ loss:
   temporal_weight: 0.1 # Temporal smoothness loss
   lpips_weight: 0.2 # Perceptual loss (requires lpips package)
   lpips_net: vgg # Options: vgg, alex, squeeze
-  dino_weight: 0.0 # DINOv2 semantic feature loss (0 = disabled)
-  dino_model: dinov2_vits14 # Options: dinov2_vits14, dinov2_vitb14, dinov2_vitl14
 
 output:
-  save_dir: ckpts/attacker_1024
+  save_dir: ckpts/small/attacker_1024_augmented
 
 eval:
   enabled: true
-  h5_path: trajectory_data/eval_tf_108.h5
+  h5_path: trajectory_data/small/gradients_test.h5
   num_sequences: 20
 
 wandb:
   enabled: true
   project: gradient-inversion
-  name: attacker-train-1024
+  name: small_1024
   entity: gradinversion
-  tags: ["augmented", "3x-data", "stride2", "1.2M-grads", "1024-latent"]
+  tags: ["small", "1024-latent"]

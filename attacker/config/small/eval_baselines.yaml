@@ -1,0 +1,41 @@
+# Baseline Evaluation Configuration
+# Usage: uv run -m attacker.evaluation.evaluate_baselines attacker/config/eval_baselines.yaml
+
+device: auto
+
+data:
+  h5_path: trajectory_data/small/gradients_test.h5
+  gradient_dim: 936102
+
+model:
+  sequence_length: 8
+  stride: 8
+  latent_dim: 1024
+  encoder_type: residual
+  decoder_type: residual
+
+eval:
+  victim_checkpoint: ckpts/victim/ppo_ai2thor_final.pt
+  num_sequences: 5
+  run_dlg: true
+  run_ig: true
+  run_singleframe: true
+  enable_fid: true
+
+dlg:
+  num_iterations: 300   # matching official mit-han-lab/dlg
+  lr: 1.0
+  num_restarts: 1
+
+ig:
+  num_iterations: 4800  # matching official JonasGeiping/invertinggradients DEFAULT_CONFIG
+  lr: 0.1
+  tv_weight: 1e-1      # matching official default
+  num_restarts: 1
+  signed: false
+
+singleframe:
+  checkpoint: ckpts/small/singleframe/best_model.pt
+
+output:
+  save_dir: ckpts/small/eval_results/baselines

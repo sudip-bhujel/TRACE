@@ -1,70 +1,69 @@
 #!/bin/bash
-# Usage: sbatch --account=$ACCOUNT_NAME attacker/scripts/train.sh
-# source .env && sbatch -A $ACCOUNT_NAME attacker/scripts/train.sh
+# Usage: source .env && sbatch -A $ACCOUNT_NAME attacker/scripts/train.sh <config_path>
+# Example: cd $SCRATCH/projects/grad_inversion && source .env && sbatch -A $ACCOUNT_NAME attacker/scripts/train.sh attacker/config/train_layers_dino.yaml
 
 #SBATCH --time=3-00:00:00
-#SBATCH --job-name=train_temporal_lm_108_1024
+#SBATCH --job-name=train
 #SBATCH --ntasks=1
 #SBATCH --partition=H8V141_SAP112M2000_L
 #SBATCH --gres=gpu:6
-#SBATCH --cpus-per-task=64
-#SBATCH --mem=512G
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=1024G
 #SBATCH -e ./logs/err_%j.log
 #SBATCH -o ./logs/out_%j.log
 #SBATCH --export=NONE
 
-unset LD_LIBRARY_PATH
-
 module load ccs/Miniconda3
-module load ccs/singularity
+source activate inversion
 
-IMG=/share/singularity/images/ccs/rocky/rocky8.sinf
-# IMG=/share/singularity/images/ccs/conda/lcc-jupyter-rocky8.sinf
+CONFIG="$1"
+
+if [ ! -f "$CONFIG" ]; then
+    echo "Error: Config file not found: $CONFIG"
+    exit 1
+fi
+
+# Derive job name from config filename (e.g., train_layers_dino.yaml -> train_layers_dino)
+JOB_NAME=$(basename "$CONFIG" .yaml)
+scontrol update JobId="$SLURM_JOB_ID" JobName="$JOB_NAME"
+echo "Job name set to: $JOB_NAME"
 
 # Load environment variables from .env
 if [ -f .env ]; then
   export $(grep -v '^#' .env | xargs)
 fi
 
-# Export WANDB_API_KEY to Singularity using SINGULARITYENV_ prefix
-if [ -n "${WANDB_API_KEY:-}" ]; then
-  export SINGULARITYENV_WANDB_API_KEY="$WANDB_API_KEY"
+# Configure WandB directories
+export WANDB_DIR="${TMPDIR:-/tmp}"
+export WANDB_CACHE_DIR="${TMPDIR:-/tmp}/wandb_cache"
+export WANDB_CONFIG_DIR="${TMPDIR:-/tmp}/wandb_config"
+mkdir -p "$WANDB_CACHE_DIR" "$WANDB_CONFIG_DIR"
+
+# Configure environment variables for PyTorch and NCCL
+export NCCL_DEBUG=INFO
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_SOCKET_IFNAME=^lo,docker0
+export NCCL_P2P_LEVEL=NVL
+export TORCH_NCCL_TRACE_BUFFER_SIZE=1048576
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+
+# Job id and job name
+echo "Job ID: $SLURM_JOB_ID"
+echo "Job Name: $JOB_NAME"
+
+# Get number of GPUs
+NGPUS=$(nvidia-smi -L | wc -l)
+echo "==== Detected $NGPUS GPUs ===="
+
+if [ "$NGPUS" -gt 1 ]; then
+    echo "==== Starting DDP training with $NGPUS GPUs ===="
+    # Use torch.distributed.run (torchrun) for DDP
+    python -m torch.distributed.run --standalone --nproc_per_node=$NGPUS -m attacker.training.train $CONFIG
+else
+    echo "==== Starting single-GPU/CPU training ===="
+    # Standard python execution for single device
+    python -m attacker.training.train $CONFIG
 fi
 
-echo "---- Running inside container ----"
-singularity exec --nv "$IMG" bash -lc '
-  set -euo pipefail
-  echo "Container OS: $(grep PRETTY_NAME /etc/os-release)"
-  echo "whoami: $(whoami)"
-  echo "pwd: $(pwd)"
-  echo "python: $(which python || true)"
-  echo "uv: $(which uv || true)"
-  echo "TMPDIR=${TMPDIR:-unset}"
-  echo "ulimit -a:"
-  echo "ulimit -a:"
-  ulimit -a
-
-  # Print job info (from SBATCH directives)
-  echo "Job ID: ${SLURM_JOB_ID:-unknown}"
-  echo "Job Name: ${SLURM_JOB_NAME:-unknown}"
-  echo "Partition: ${SLURM_JOB_PARTITION:-unknown}"
-  echo "CPUs per Task: ${SLURM_CPUS_PER_TASK:-unknown}"
-  echo "GPUs: ${SLURM_GPUS:-unknown}"
-  
-  # Configure WandB directories
-  export WANDB_DIR="${TMPDIR:-/tmp}"
-  export WANDB_CACHE_DIR="${TMPDIR:-/tmp}/wandb_cache"
-  export WANDB_CONFIG_DIR="${TMPDIR:-/tmp}/wandb_config"
-  mkdir -p "$WANDB_CACHE_DIR" "$WANDB_CONFIG_DIR"
-  
-  nvidia-smi || true
-  
-  # Get number of GPUs
-  NGPUS=$(nvidia-smi -L | wc -l)
-  echo "==== starting DDP training with $NGPUS GPUs ===="
-  
-  # Use torch.distributed.run (torchrun) for DDP
-  uv sync
-  uv run python -m torch.distributed.run --standalone --nproc_per_node=$NGPUS -m attacker.train ./attacker/config/train.yaml
-  echo "---- Container execution completed ----"
-'
+echo "---- Container execution completed ----"

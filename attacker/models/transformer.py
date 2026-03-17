@@ -1,6 +1,34 @@
+from contextlib import nullcontext
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+def _math_only_sdpa_context():
+    """
+    Return an SDPA context manager that forces the math backend.
+
+    Uses the new torch.nn.attention API when available, with a fallback to the
+    legacy torch.backends.cuda API for older PyTorch versions.
+    """
+    if (
+        hasattr(torch.nn, "attention")
+        and hasattr(torch.nn.attention, "sdpa_kernel")
+        and hasattr(torch.nn.attention, "SDPBackend")
+    ):
+        return torch.nn.attention.sdpa_kernel(
+            backends=[torch.nn.attention.SDPBackend.MATH]
+        )
+
+    if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "sdp_kernel"):
+        return torch.backends.cuda.sdp_kernel(
+            enable_flash=False,
+            enable_mem_efficient=False,
+            enable_math=True,
+        )
+
+    return nullcontext()
 
 
 class MultiHeadAttention(nn.Module):
@@ -34,10 +62,13 @@ class MultiHeadAttention(nn.Module):
         self.out_proj = nn.Linear(latent_dim, latent_dim)
         self.dropout = dropout
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, use_flash_attention: bool = True
+    ) -> torch.Tensor:
         """
         Args:
             x: (B, T, latent_dim)
+            use_flash_attention: If False, disable Flash Attention kernels on CUDA.
         Returns:
             (B, T, latent_dim)
         """
@@ -49,15 +80,24 @@ class MultiHeadAttention(nn.Module):
         qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, B, heads, T, head_dim)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        # Flash Attention via PyTorch's SDPA
-        out = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            attn_mask=None,
-            dropout_p=self.dropout if self.training else 0.0,
-            is_causal=self.is_causal,  # Enables efficient causal masking
-        )
+        # Flash Attention toggle via SDPA backend selection.
+        # If disabled, force non-Flash math backend on CUDA.
+        sdpa_ctx = nullcontext()
+        if (
+            q.is_cuda
+            and not use_flash_attention
+        ):
+            sdpa_ctx = _math_only_sdpa_context()
+
+        with sdpa_ctx:
+            out = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=None,
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=self.is_causal,  # Enables efficient causal masking
+            )
 
         # Reshape and project output
         out = out.transpose(1, 2).contiguous()
@@ -88,15 +128,20 @@ class TransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(latent_dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, use_flash_attention: bool = True
+    ) -> torch.Tensor:
         """
         Args:
             x: (B, T, latent_dim)
+            use_flash_attention: If False, disables Flash kernels in attention.
         Returns:
             (B, T, latent_dim)
         """
         # Pre-norm architecture (like norm_first=True)
-        x = x + self.dropout(self.attention(self.norm1(x)))
+        x = x + self.dropout(
+            self.attention(self.norm1(x), use_flash_attention=use_flash_attention)
+        )
         x = x + self.dropout(self.ffn(self.norm2(x)))
         return x
 
@@ -146,10 +191,13 @@ class TemporalTransformer(nn.Module):
 
         self.norm = nn.LayerNorm(latent_dim)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, use_flash_attention: bool = True
+    ) -> torch.Tensor:
         """
         Args:
             x: (B, T, latent_dim)
+            use_flash_attention: If False, disables Flash kernels in all blocks.
         Returns:
             (B, T, latent_dim)
         """
@@ -160,7 +208,7 @@ class TemporalTransformer(nn.Module):
 
         # Apply transformer layers (Flash Attention auto-enabled via SDPA)
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, use_flash_attention=use_flash_attention)
 
         x = self.norm(x)
 

@@ -1,6 +1,6 @@
 # Temporal Gradient Inversion Training Configuration (Layer Selection)
 # Uses the most effective gradient layers identified by analyze_gradients.py
-# Usage: python -m attacker.train ./attacker/config/train_layers.yaml
+# Usage: python -m attacker.training.train ./attacker/config/train_layers.yaml
 
 device: auto
 
@@ -49,11 +49,11 @@ model:
 
 training:
   num_epochs: 100
-  batch_size: 8
-  accumulation_steps: 6
+  batch_size: 2
+  accumulation_steps: 16
   learning_rate: 1e-4
   weight_decay: 1e-5
-  num_workers: 4
+  num_workers: 2
 
   lr_schedule: cosine
   warmup_epochs: 5

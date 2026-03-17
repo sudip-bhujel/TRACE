@@ -1,0 +1,59 @@
+# Ablation: Remove LPIPS perceptual loss (keep MSE, L1, action, temporal)
+# Usage: uv run -m attacker.training.train ./attacker/config/ablation/train_no_lpips.yaml
+
+device: auto
+
+data:
+  h5_path: trajectory_data/small/gradients_train_augmented.h5
+  gradient_dim: 936102
+
+model:
+  sequence_length: 8
+  latent_dim: 1024
+  stride: 2
+  num_transformer_layers: 6
+  num_heads: 8
+  encoder_type: residual
+  decoder_type: residual
+  encoder_hidden_dims: [4096, 2048, 1024]
+  dropout: 0.1
+  use_flash_attention: true
+
+training:
+  num_epochs: 50
+  batch_size: 8
+  accumulation_steps: 8
+  learning_rate: 1e-4
+  weight_decay: 1e-5
+  num_workers: 4
+
+  lr_schedule: cosine
+  warmup_epochs: 5
+  min_lr: 1e-6
+
+  gradient_noise_scale: 0.0
+
+loss:
+  mse_weight: 1.0
+  l1_weight: 0.5
+  action_weight: 0.1
+  temporal_weight: 0.1
+  lpips_weight: 0.0
+  lpips_net: vgg
+  dino_weight: 0.0
+  dino_model: dinov2_vits14
+
+output:
+  save_dir: ckpts/small/ablation/no_lpips
+
+eval:
+  enabled: true
+  h5_path: trajectory_data/small/gradients_test.h5
+  num_sequences: 100
+
+wandb:
+  enabled: true
+  project: gradient-inversion
+  name: small_ablation_no_lpips
+  entity: gradinversion
+  tags: ["small", "ablation", "no-lpips"]

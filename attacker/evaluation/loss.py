@@ -25,9 +25,6 @@ class TemporalCombinedLoss(nn.Module):
         temporal_weight: float = 0.0,
         lpips_weight: float = 0.0,
         lpips_net: str = "vgg",
-        token_weight: float = 0.0,
-        dino_weight: float = 0.0,
-        dino_model: str = "dinov2_vits14",
     ):
         super().__init__()
         self.mse_weight = mse_weight
@@ -35,8 +32,6 @@ class TemporalCombinedLoss(nn.Module):
         self.action_weight = action_weight
         self.temporal_weight = temporal_weight
         self.lpips_weight = lpips_weight
-        self.token_weight = token_weight
-        self.dino_weight = dino_weight
 
         self.mse_loss = nn.MSELoss()
         self.l1_loss = nn.L1Loss()
@@ -47,18 +42,6 @@ class TemporalCombinedLoss(nn.Module):
             self.lpips_loss = lpips.LPIPS(net=lpips_net).to(device)
         else:
             self.lpips_loss = None
-
-        # DINOv2 feature loss (only create if weight > 0)
-        if dino_weight > 0:
-            self.dino = torch.hub.load(
-                "facebookresearch/dinov2", dino_model, verbose=False
-            )
-            self.dino.eval()
-            for p in self.dino.parameters():
-                p.requires_grad = False
-            self.dino = self.dino.to(device)
-        else:
-            self.dino = None
 
     def forward(
         self,
@@ -89,27 +72,6 @@ class TemporalCombinedLoss(nn.Module):
         else:
             lpips_val = torch.tensor(0.0, device=pred_images.device)
 
-        # DINOv2 feature loss (semantic similarity)
-        if self.dino is not None:
-            # Run DINOv2 in float32 to avoid fp16 overflow
-            with torch.amp.autocast(device_type="cuda", enabled=False):
-                # Upscale to 98x98 for clean 7x7 patch grid (98/14=7)
-                pred_up = F.interpolate(
-                    pred_img_flat.float(), size=98, mode="bilinear", align_corners=False
-                )
-                tgt_up = F.interpolate(
-                    target_img_flat.float(),
-                    size=98,
-                    mode="bilinear",
-                    align_corners=False,
-                )
-                with torch.no_grad():
-                    tgt_feats = self.dino.forward_features(tgt_up)["x_norm_patchtokens"]
-                pred_feats = self.dino.forward_features(pred_up)["x_norm_patchtokens"]
-                dino_val = F.mse_loss(pred_feats, tgt_feats)
-        else:
-            dino_val = torch.tensor(0.0, device=pred_images.device)
-
         # Temporal smoothness (penalize large changes between consecutive frames)
         if self.temporal_weight > 0 and T > 1:
             pred_diff = pred_images[:, 1:] - pred_images[:, :-1]
@@ -118,30 +80,13 @@ class TemporalCombinedLoss(nn.Module):
         else:
             temporal_loss = torch.tensor(0.0, device=pred_images.device)
 
-        # Token prediction loss (VQ-GAN mode)
-        if (
-            self.token_weight > 0
-            and token_logits is not None
-            and target_tokens is not None
-        ):
-            # token_logits: (B*T, num_tokens, codebook_size)
-            # target_tokens: (B*T, num_tokens)
-            token_loss = F.cross_entropy(
-                token_logits.reshape(-1, token_logits.shape[-1]),
-                target_tokens.reshape(-1),
-            )
-        else:
-            token_loss = torch.tensor(0.0, device=pred_images.device)
-
         # Total loss
         total = (
             self.mse_weight * mse
             + self.l1_weight * l1
             + self.action_weight * action_loss
             + self.lpips_weight * lpips_val
-            + self.dino_weight * dino_val
             + self.temporal_weight * temporal_loss
-            + self.token_weight * token_loss
         )
 
         loss_dict = {
@@ -150,11 +95,9 @@ class TemporalCombinedLoss(nn.Module):
             "l1": l1.item(),
             "action": action_loss.item(),
             "lpips": lpips_val.item(),
-            "dino": dino_val.item() if torch.is_tensor(dino_val) else dino_val,
             "temporal": temporal_loss.item()
             if torch.is_tensor(temporal_loss)
             else temporal_loss,
-            "token": token_loss.item() if torch.is_tensor(token_loss) else token_loss,
         }
 
         return total, loss_dict

@@ -1,5 +1,5 @@
 # Temporal Gradient Inversion Evaluation Configuration
-# Usage: uv run -m attacker.evaluate ./attacker/config/eval.yaml
+# Usage: uv run -m attacker.evaluation.evaluate ./attacker/config/eval.yaml
 
 device: auto
 

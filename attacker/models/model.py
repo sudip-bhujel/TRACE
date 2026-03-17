@@ -70,27 +70,29 @@ class TemporalGradientInversion(nn.Module):
         )
 
     def forward(
-        self, gradients: torch.Tensor
+        self, gradients: torch.Tensor, use_flash_attention: bool = True
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """
         Args:
             gradients: (B, T, gradient_dim)
+            use_flash_attention: If False, disables Flash kernels in transformer SDPA.
         Returns:
             images: (B, T, 3, H, W)
             actions: (B, T, num_actions)
             latents: (B, T, latent_dim)
-            token_logits: (B*T, num_tokens, codebook_size) or None
+            token_logits: None (reserved for backward compatibility)
         """
         # Encode each gradient
         latents = self.gradient_encoder(gradients)  # (B, T, latent_dim)
 
         # Apply temporal transformer (causal attention) unless skipped
         if not self.skip_transformer:
-            latents = self.temporal_transformer(latents)  # (B, T, latent_dim)
+            latents = self.temporal_transformer(
+                latents, use_flash_attention=use_flash_attention
+            )  # (B, T, latent_dim)
 
-        # Decode to images and actions
-        # VQ-GAN decoder returns (images, actions, token_logits)
-        # Standard decoders return (images, actions)
+        # Decode to images and actions.
+        # Keep a compatibility branch for older checkpoint formats.
         output = self.image_decoder(latents)
 
         if len(output) == 3:
