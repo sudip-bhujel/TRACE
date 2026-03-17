@@ -1,6 +1,7 @@
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, cast
 
 import h5py
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
@@ -57,7 +58,8 @@ class TemporalGradientDataset(Dataset):
 
             # Get actual gradient dim from H5 to clamp partially-captured layers
             with h5py.File(h5_path, "r") as h5_tmp:
-                actual_grad_dim = h5_tmp["gradients"].shape[1]
+                gradients_ds = cast(h5py.Dataset, h5_tmp["gradients"])
+                actual_grad_dim = gradients_ds.shape[1]
 
             self._layer_slices = []
             for name in gradient_layers:
@@ -88,16 +90,20 @@ class TemporalGradientDataset(Dataset):
         # Open HDF5 file temporarily to get metadata and load small arrays
         with h5py.File(h5_path, "r") as h5_file:
             # Keep gradient dataset shape for later
-            self.gradient_shape = h5_file["gradients"].shape
+            gradients_ds = cast(h5py.Dataset, h5_file["gradients"])
+            self.gradient_shape = gradients_ds.shape
+
+            images_ds = cast(h5py.Dataset, h5_file["images"])
+            actions_ds = cast(h5py.Dataset, h5_file["actions"])
+            episode_ids_ds = cast(h5py.Dataset, h5_file["episode_ids"])
+            done_ds = cast(h5py.Dataset, h5_file["done"])
 
             # Load smaller arrays into memory (images, actions, etc.)
             # Images: 23k * 3 * 84 * 84 * 1 byte = ~470 MB - fits in memory
-            self.images = (
-                torch.tensor(h5_file["images"][:], dtype=torch.float32) / 255.0
-            )
-            self.actions = torch.tensor(h5_file["actions"][:], dtype=torch.long)
-            self.episode_ids = torch.tensor(h5_file["episode_ids"][:], dtype=torch.long)
-            self.done = torch.tensor(h5_file["done"][:], dtype=torch.bool)
+            self.images = torch.tensor(images_ds[:], dtype=torch.float32) / 255.0
+            self.actions = torch.tensor(actions_ds[:], dtype=torch.long)
+            self.episode_ids = torch.tensor(episode_ids_ds[:], dtype=torch.long)
+            self.done = torch.tensor(done_ds[:], dtype=torch.bool)
 
         # Compute effective gradient dim for non-layer-selection mode
         if self._effective_gradient_dim is None:
@@ -141,7 +147,7 @@ class TemporalGradientDataset(Dataset):
         """Open HDF5 file if not already open (per-worker lazy initialization)."""
         if self._h5_file is None:
             self._h5_file = h5py.File(self.h5_path, "r")
-            self._gradients_dataset = self._h5_file["gradients"]
+            self._gradients_dataset = cast(h5py.Dataset, self._h5_file["gradients"])
 
     def __del__(self):
         """Close HDF5 file when dataset is deleted."""
@@ -186,6 +192,7 @@ class TemporalGradientDataset(Dataset):
     @property
     def effective_gradient_dim(self) -> int:
         """The actual gradient dimension after layer selection or truncation."""
+        assert self._effective_gradient_dim is not None
         return self._effective_gradient_dim
 
     def __len__(self) -> int:
@@ -204,14 +211,13 @@ class TemporalGradientDataset(Dataset):
 
         # Ensure HDF5 file is open in this worker
         self._ensure_h5_open()
+        assert self._gradients_dataset is not None
 
         # Lazy load gradients from HDF5 (only this slice, not entire array)
         gradients_np = self._gradients_dataset[start_idx:end_idx]
 
         if self._layer_slices is not None:
             # Layer-name selection: extract and concatenate selected slices
-            import numpy as np
-
             slices = [gradients_np[:, s:e] for s, e in self._layer_slices]
             gradients_np = np.concatenate(slices, axis=1)
         elif (

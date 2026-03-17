@@ -7,7 +7,8 @@ from typing import Tuple
 import torch
 import torch.nn as nn
 
-from attacker.baselines.common import get_decoder, get_encoder
+from attacker.models.decoder import get_decoder
+from attacker.models.encoder import get_encoder
 
 
 class SingleFrameInversion(nn.Module):

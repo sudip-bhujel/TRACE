@@ -50,9 +50,11 @@ class ImageDecoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         has_time_dim = x.dim() == 3
+        time_shape = None
 
         if has_time_dim:
             B, T, D = x.shape
+            time_shape = (B, T)
             x_flat = x.reshape(B * T, D)
         else:
             x_flat = x
@@ -63,9 +65,12 @@ class ImageDecoder(nn.Module):
 
         actions = self.action_head(x_flat)
 
-        if has_time_dim:
-            images = images.view(B, T, 3, self.image_size, self.image_size)
-            actions = actions.view(B, T, -1)
+        if has_time_dim and time_shape is not None:
+            batch_size, sequence_length = time_shape
+            images = images.view(
+                batch_size, sequence_length, 3, self.image_size, self.image_size
+            )
+            actions = actions.view(batch_size, sequence_length, -1)
 
         return images, actions
 
@@ -134,9 +139,11 @@ class ResidualImageDecoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         has_time_dim = x.dim() == 3
+        time_shape = None
 
         if has_time_dim:
             B, T, D = x.shape
+            time_shape = (B, T)
             x_flat = x.reshape(B * T, D)
         else:
             x_flat = x
@@ -153,9 +160,12 @@ class ResidualImageDecoder(nn.Module):
         images = self.final(h)
         actions = self.action_head(x_flat)
 
-        if has_time_dim:
-            images = images.view(B, T, 3, self.image_size, self.image_size)
-            actions = actions.view(B, T, -1)
+        if has_time_dim and time_shape is not None:
+            batch_size, sequence_length = time_shape
+            images = images.view(
+                batch_size, sequence_length, 3, self.image_size, self.image_size
+            )
+            actions = actions.view(batch_size, sequence_length, -1)
 
         return images, actions
 

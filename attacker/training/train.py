@@ -7,12 +7,12 @@ import random
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Union, cast
 
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 from torch import optim
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -36,7 +36,7 @@ def train_epoch(
     optimizer: optim.Optimizer,
     device: torch.device,
     epoch: int,
-    scaler: torch.amp.GradScaler = None,
+    scaler: Optional[torch.cuda.amp.GradScaler] = None,
     accumulation_steps: int = 1,
     use_flash_attention: bool = True,
     gradient_noise_scale: float = 0.0,
@@ -70,7 +70,7 @@ def train_epoch(
             gradients = gradients * mask
 
         # Forward pass with mixed precision (Flash Attention auto-enabled via SDPA)
-        with torch.amp.autocast(device_type=device.type, enabled=scaler is not None):
+        with torch.autocast(device_type=device.type, enabled=scaler is not None):
             pred_images, pred_actions, _, _ = model(
                 gradients, use_flash_attention=use_flash_attention
             )
@@ -238,8 +238,8 @@ def train(
     batch_size: int = 2,
     accumulation_steps: int = 8,
     learning_rate: float = 1e-4,
-    device: str = "auto",
-    save_dir: str = "ckpts/attacker_temporal",
+    device: Union[str, torch.device] = "auto",
+    save_dir: Union[str, Path] = "ckpts/attacker_temporal",
     gradient_dim: Optional[int] = None,
     gradient_layers: Optional[List[str]] = None,
     sequence_length: int = 8,
@@ -424,7 +424,7 @@ def train(
         print(f"  Number of actions: {num_actions}")
 
     # Create model (Flash Attention auto-enabled by PyTorch 2.0+ with mixed precision)
-    model = TemporalGradientInversion(
+    model: nn.Module = TemporalGradientInversion(
         gradient_dim=actual_gradient_dim,
         latent_dim=latent_dim,
         num_actions=num_actions,
@@ -459,7 +459,7 @@ def train(
     # Wrap model with DDP
     if ddp:
         model = DDP(model, device_ids=[ddp_local_rank])
-    raw_model = model.module if ddp else model  # Unwrap for saving
+    raw_model = cast(nn.Module, model.module if ddp else model)  # Unwrap for saving
 
     # Loss and optimizer
     criterion = TemporalCombinedLoss(
@@ -513,7 +513,7 @@ def train(
             print(f"Added {warmup_epochs} epoch LR warmup")
 
     # Mixed precision
-    scaler = torch.amp.GradScaler() if device.type == "cuda" else None
+    scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
     if scaler and master_process:
         print("Using mixed precision training (fp16)")
 
@@ -529,7 +529,7 @@ def train(
 
     for epoch in range(1, num_epochs + 1):
         # Set epoch for DistributedSampler (ensures different shuffling each epoch)
-        if ddp:
+        if ddp and train_sampler is not None:
             train_sampler.set_epoch(epoch)
 
         train_loss = train_epoch(
@@ -660,15 +660,17 @@ def train(
 if __name__ == "__main__":
     assert len(sys.argv) > 1, "Usage: python train.py <config_path>"
 
-    cfg = OmegaConf.load(sys.argv[1])
+    cfg_loaded = OmegaConf.load(sys.argv[1])
+    assert isinstance(cfg_loaded, DictConfig), "Config root must be a mapping"
+    cfg: DictConfig = cfg_loaded
 
     # Extract config with defaults
-    data_cfg = cfg.get("data", {}) if hasattr(cfg, "get") else {}
-    model_cfg = cfg.get("model", {}) if hasattr(cfg, "get") else {}
-    training_cfg = cfg.get("training", {}) if hasattr(cfg, "get") else {}
-    output_cfg = cfg.get("output", {}) if hasattr(cfg, "get") else {}
-    loss_cfg = cfg.get("loss", {}) if hasattr(cfg, "get") else {}
-    eval_cfg = cfg.get("eval", {}) if hasattr(cfg, "get") else {}
+    data_cfg = cast(Dict[str, Any], cfg.get("data", {}))
+    model_cfg = cast(Dict[str, Any], cfg.get("model", {}))
+    training_cfg = cast(Dict[str, Any], cfg.get("training", {}))
+    output_cfg = cast(Dict[str, Any], cfg.get("output", {}))
+    loss_cfg = cast(Dict[str, Any], cfg.get("loss", {}))
+    eval_cfg = cast(Dict[str, Any], cfg.get("eval", {}))
 
     # Apply CLI overrides
     gradient_dim = data_cfg.get("gradient_dim", None)
@@ -687,18 +689,22 @@ if __name__ == "__main__":
         OmegaConf.save(cfg, str(config_save_path))
         print(f"Saved config to {config_save_path}")
 
-    wandb_cfg = cfg.get("wandb", {}) if hasattr(cfg, "get") else {}
+    wandb_cfg = cast(Dict[str, Any], cfg.get("wandb", {}))
 
     # Only init WandB on master process (rank 0) to avoid duplicate runs
     is_master = int(os.environ.get("RANK", 0)) == 0
     if wandb_cfg.get("enabled", False) and is_master:
         wandb.login()
+        wandb_container = OmegaConf.to_container(cfg, resolve=True)
+        wandb_config: Dict[str, Any] = {}
+        if isinstance(wandb_container, dict):
+            wandb_config = {str(k): v for k, v in wandb_container.items()}
         wandb.init(
             project=wandb_cfg.get("project", "gradient-inversion"),
             name=wandb_cfg.get("name", None),
             group=wandb_cfg.get("group", None),
             entity=wandb_cfg.get("entity", None),
-            config=OmegaConf.to_container(cfg, resolve=True),
+            config=wandb_config,
         )
 
     train(
@@ -707,7 +713,7 @@ if __name__ == "__main__":
         batch_size=training_cfg.get("batch_size", 2),
         accumulation_steps=training_cfg.get("accumulation_steps", 8),
         learning_rate=training_cfg.get("learning_rate", 1e-4),
-        device=cfg.get("device", "auto") if hasattr(cfg, "get") else "auto",
+        device=cfg.get("device", "auto"),
         save_dir=save_dir,
         gradient_dim=gradient_dim,
         gradient_layers=gradient_layers,
@@ -760,7 +766,7 @@ if __name__ == "__main__":
             stride=model_cfg.get("stride", 8),
             gradient_dim=gradient_dim,
             gradient_layers=gradient_layers,
-            device=cfg.get("device", "auto") if hasattr(cfg, "get") else "auto",
+            device=cfg.get("device", "auto"),
             latent_dim=model_cfg.get("latent_dim", 512),
             num_transformer_layers=model_cfg.get("num_transformer_layers", 4),
             num_heads=model_cfg.get("num_heads", 8),

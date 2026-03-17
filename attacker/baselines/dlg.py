@@ -6,7 +6,7 @@ DLG (Zhu et al., NeurIPS 2019):
 Based on: https://github.com/mit-han-lab/dlg
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -98,10 +98,9 @@ class DLGBaseline:
                 )
 
                 # Per-parameter L2 matching (matches official code exactly)
-                grad_diff = sum(
-                    ((dg - og) ** 2).sum()
-                    for dg, og in zip(dummy_grads, original_grads)
-                )
+                grad_diff = torch.zeros((), device=device)
+                for dg, og in zip(dummy_grads, original_grads):
+                    grad_diff = grad_diff + ((dg - og) ** 2).sum()
                 grad_diff.backward()
                 return grad_diff
 
@@ -127,8 +126,8 @@ class DLGBaseline:
         initialisations and keeps the result with the lowest matching loss.
         """
         best_loss = float("inf")
-        best_x = None
-        best_y = None
+        best_x: Optional[torch.Tensor] = None
+        best_y: Optional[torch.Tensor] = None
 
         for _ in range(self.num_restarts):
             x, y, loss = self._run_once(observed_gradient)
@@ -137,7 +136,8 @@ class DLGBaseline:
                 best_x = x
                 best_y = y
 
-        action = best_y.squeeze(0).argmax().item()
+        assert best_x is not None and best_y is not None
+        action = int(best_y.squeeze(0).argmax().item())
         return best_x.squeeze(0), action
 
     def reconstruct(

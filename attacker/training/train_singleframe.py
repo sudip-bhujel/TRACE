@@ -11,18 +11,18 @@ Usage:
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Union, cast
 
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 from torch import optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import wandb
-from attacker.baselines import SingleFrameInversion
+from attacker.baselines.single_frame import SingleFrameInversion
 from attacker.data.dataset import TemporalGradientDataset
 from attacker.evaluation.loss import TemporalCombinedLoss
 
@@ -34,7 +34,7 @@ def train_epoch(
     optimizer: optim.Optimizer,
     device: torch.device,
     epoch: int,
-    scaler: torch.amp.GradScaler = None,
+    scaler: Optional[torch.cuda.amp.GradScaler] = None,
     accumulation_steps: int = 1,
 ) -> dict:
     model.train()
@@ -50,7 +50,7 @@ def train_epoch(
         images = images.to(device)
         actions = actions.to(device)
 
-        with torch.amp.autocast(device_type=device.type, enabled=scaler is not None):
+        with torch.autocast(device_type=device.type, enabled=scaler is not None):
             pred_images, pred_actions, _, _ = model(gradients)
             loss, loss_dict = criterion(pred_images, images, pred_actions, actions)
             loss = loss / accumulation_steps
@@ -131,8 +131,8 @@ def train(
     batch_size: int = 2,
     accumulation_steps: int = 8,
     learning_rate: float = 1e-4,
-    device: str = "auto",
-    save_dir: str = "ckpts/singleframe",
+    device: Union[str, torch.device] = "auto",
+    save_dir: Union[str, Path] = "ckpts/singleframe",
     gradient_dim: Optional[int] = None,
     gradient_layers: Optional[List[str]] = None,
     sequence_length: int = 8,
@@ -249,7 +249,7 @@ def train(
             milestones=[warmup_epochs],
         )
 
-    scaler = torch.amp.GradScaler() if device.type == "cuda" else None
+    scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
 
     best_val_loss = float("inf")
     train_losses = []
@@ -343,32 +343,38 @@ if __name__ == "__main__":
         "Usage: uv run -m attacker.train_singleframe <config_path>"
     )
 
-    cfg = OmegaConf.load(sys.argv[1])
+    cfg_loaded = OmegaConf.load(sys.argv[1])
+    assert isinstance(cfg_loaded, DictConfig), "Config root must be a mapping"
+    cfg: DictConfig = cfg_loaded
     print(f"Loaded config from {sys.argv[1]}")
 
-    data_cfg = cfg.get("data", {})
-    model_cfg = cfg.get("model", {})
-    training_cfg = cfg.get("training", {})
-    output_cfg = cfg.get("output", {})
-    loss_cfg = cfg.get("loss", {})
+    data_cfg = cast(Dict[str, Any], cfg.get("data", {}))
+    model_cfg = cast(Dict[str, Any], cfg.get("model", {}))
+    training_cfg = cast(Dict[str, Any], cfg.get("training", {}))
+    output_cfg = cast(Dict[str, Any], cfg.get("output", {}))
+    loss_cfg = cast(Dict[str, Any], cfg.get("loss", {}))
 
     gradient_layers = data_cfg.get("gradient_layers", None)
     if gradient_layers is not None:
         gradient_layers = list(gradient_layers)
 
-    wandb_cfg = cfg.get("wandb", {})
+    wandb_cfg = cast(Dict[str, Any], cfg.get("wandb", {}))
     if wandb_cfg.get("enabled", False):
         wandb.login()
+        wandb_container = OmegaConf.to_container(cfg, resolve=True)
+        wandb_config: Dict[str, Any] = {}
+        if isinstance(wandb_container, dict):
+            wandb_config = {str(k): v for k, v in wandb_container.items()}
         wandb.init(
             project=wandb_cfg.get("project", "gradient-inversion"),
             name=wandb_cfg.get("name", "singleframe-baseline"),
             entity=wandb_cfg.get("entity", "gradinversion"),
-            config=OmegaConf.to_container(cfg, resolve=True),
+            config=wandb_config,
             tags=wandb_cfg.get("tags", []),
         )
 
     train(
-        h5_path=data_cfg.get("h5_path"),
+        h5_path=data_cfg.get("h5_path", "trajectory_data/gradients.h5"),
         num_epochs=training_cfg.get("num_epochs", 50),
         batch_size=training_cfg.get("batch_size", 2),
         accumulation_steps=training_cfg.get("accumulation_steps", 8),

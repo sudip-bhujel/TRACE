@@ -7,7 +7,7 @@ Inverting Gradients (Geiping et al., NeurIPS 2020):
 Based on: https://github.com/JonasGeiping/invertinggradients
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -112,11 +112,17 @@ class IGBaseline:
 
                 # Cosine similarity (cost_fn='sim') matching official code:
                 # 1 + sum(-g1*g2) / sqrt(sum(g1^2)) / sqrt(sum(g2^2))
-                dot = sum(
-                    (tg * og).sum() for tg, og in zip(trial_grads, original_grads)
-                )
-                pnorm_trial = sum(tg.pow(2).sum() for tg in trial_grads)
-                pnorm_orig = sum(og.pow(2).sum() for og in original_grads)
+                dot = torch.zeros((), device=device)
+                for tg, og in zip(trial_grads, original_grads):
+                    dot = dot + (tg * og).sum()
+
+                pnorm_trial = torch.zeros((), device=device)
+                for tg in trial_grads:
+                    pnorm_trial = pnorm_trial + tg.pow(2).sum()
+
+                pnorm_orig = torch.zeros((), device=device)
+                for og in original_grads:
+                    pnorm_orig = pnorm_orig + og.pow(2).sum()
                 rec_loss = 1.0 - dot / (pnorm_trial.sqrt() * pnorm_orig.sqrt() + 1e-12)
 
                 if self.tv_weight > 0:
@@ -124,7 +130,7 @@ class IGBaseline:
 
                 rec_loss.backward()
 
-                if self.signed:
+                if self.signed and x_hat.grad is not None:
                     x_hat.grad.sign_()
 
                 return rec_loss
@@ -160,7 +166,7 @@ class IGBaseline:
         action_tensor = torch.tensor([action], device=device)
 
         best_loss = float("inf")
-        best_x = None
+        best_x: Optional[torch.Tensor] = None
 
         for _ in range(self.num_restarts):
             x, loss = self._run_once(observed_gradient, action_tensor)
@@ -168,6 +174,7 @@ class IGBaseline:
                 best_loss = loss
                 best_x = x
 
+        assert best_x is not None
         return best_x.squeeze(0), action
 
     def reconstruct(

@@ -57,7 +57,7 @@ def recover_action_from_gradient(
     policy_grad = gradient_vector[info["start"] : info["end"]]
     policy_grad = policy_grad.reshape(num_actions, hidden_size)
     row_sums = policy_grad.sum(dim=1)
-    return row_sums.argmin().item()
+    return int(row_sums.argmin().item())
 
 
 def total_variation_loss(images: torch.Tensor) -> torch.Tensor:
