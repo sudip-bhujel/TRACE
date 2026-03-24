@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from attacker.models.decoder import get_decoder
 from attacker.models.encoder import get_encoder
-from attacker.models.transformer import TemporalTransformer
+from attacker.models.temporal_baselines import get_temporal_model
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -15,7 +15,8 @@ class TemporalGradientInversion(nn.Module):
     Full temporal gradient inversion model.
 
     Takes a sequence of gradients and produces a sequence of images,
-    using causal attention for temporal modeling.
+    using a pluggable temporal model (Transformer, GRU, Conv1D, or
+    MLP-Mixer) for temporal modeling.
     """
 
     def __init__(
@@ -26,12 +27,19 @@ class TemporalGradientInversion(nn.Module):
         num_transformer_layers: int = 4,
         num_heads: int = 8,
         encoder_hidden_dims: Optional[List[int]] = None,
+        encoder_hidden_dim: Optional[int] = None,
+        encoder_num_blocks: Optional[int] = None,
+        encoder_expansion: Optional[int] = None,
+        encoder_projection_rank: Optional[int] = None,
         encoder_type: str = "basic",
         decoder_type: str = "basic",
         dropout: float = 0.1,
         image_size: int = 84,
         skip_transformer: bool = False,
         is_causal: bool = True,
+        temporal_model_type: str = "transformer",
+        ff_multiplier: int = 4,
+        use_rope: bool = False,
         **decoder_kwargs,
     ):
         super().__init__()
@@ -42,6 +50,14 @@ class TemporalGradientInversion(nn.Module):
         encoder_kwargs = {}
         if encoder_type == "basic" and encoder_hidden_dims is not None:
             encoder_kwargs["hidden_dims"] = encoder_hidden_dims
+        if encoder_type == "residual":
+            if encoder_hidden_dim is not None:
+                encoder_kwargs["hidden_dim"] = encoder_hidden_dim
+            if encoder_num_blocks is not None:
+                encoder_kwargs["num_blocks"] = encoder_num_blocks
+            if encoder_expansion is not None:
+                encoder_kwargs["expansion"] = encoder_expansion
+            encoder_kwargs["projection_rank"] = encoder_projection_rank
 
         self.gradient_encoder = get_encoder(
             encoder_type=encoder_type,
@@ -52,12 +68,15 @@ class TemporalGradientInversion(nn.Module):
         )
 
         if not skip_transformer:
-            self.temporal_transformer = TemporalTransformer(
+            self.temporal_model = get_temporal_model(
+                temporal_model_type=temporal_model_type,
                 latent_dim=latent_dim,
                 num_layers=num_transformer_layers,
                 num_heads=num_heads,
+                ff_multiplier=ff_multiplier,
                 dropout=dropout,
                 is_causal=is_causal,
+                use_rope=use_rope,
             )
 
         # Use factory function to get decoder
@@ -85,9 +104,9 @@ class TemporalGradientInversion(nn.Module):
         # Encode each gradient
         latents = self.gradient_encoder(gradients)  # (B, T, latent_dim)
 
-        # Apply temporal transformer (causal attention) unless skipped
+        # Apply temporal model unless skipped
         if not self.skip_transformer:
-            latents = self.temporal_transformer(
+            latents = self.temporal_model(
                 latents, use_flash_attention=use_flash_attention
             )  # (B, T, latent_dim)
 

@@ -14,7 +14,8 @@ class TemporalCombinedLoss(nn.Module):
     Combined loss for temporal gradient inversion.
 
     Computes per-frame losses and averages over the sequence.
-    Optionally includes temporal smoothness loss and VQ token prediction loss.
+    Optionally includes temporal smoothness loss, latent temporal
+    consistency loss, and VQ token prediction loss.
     """
 
     def __init__(
@@ -25,6 +26,7 @@ class TemporalCombinedLoss(nn.Module):
         temporal_weight: float = 0.0,
         lpips_weight: float = 0.0,
         lpips_net: str = "vgg",
+        latent_temporal_weight: float = 0.0,
     ):
         super().__init__()
         self.mse_weight = mse_weight
@@ -32,6 +34,7 @@ class TemporalCombinedLoss(nn.Module):
         self.action_weight = action_weight
         self.temporal_weight = temporal_weight
         self.lpips_weight = lpips_weight
+        self.latent_temporal_weight = latent_temporal_weight
 
         self.mse_loss = nn.MSELoss()
         self.l1_loss = nn.L1Loss()
@@ -49,6 +52,7 @@ class TemporalCombinedLoss(nn.Module):
         target_images: torch.Tensor,  # (B, T, 3, H, W)
         pred_actions: torch.Tensor,  # (B, T, num_actions)
         target_actions: torch.Tensor,  # (B, T)
+        latents: Optional[torch.Tensor] = None,  # (B, T, latent_dim)
         token_logits: Optional[torch.Tensor] = None,  # (B*T, num_tokens, codebook_size)
         target_tokens: Optional[torch.Tensor] = None,  # (B*T, num_tokens)
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
@@ -80,6 +84,12 @@ class TemporalCombinedLoss(nn.Module):
         else:
             temporal_loss = torch.tensor(0.0, device=pred_images.device)
 
+        if self.latent_temporal_weight > 0 and latents is not None and T > 1:
+            latent_diff = latents[:, 1:] - latents[:, :-1]
+            latent_temporal_loss = latent_diff.pow(2).mean()
+        else:
+            latent_temporal_loss = torch.tensor(0.0, device=pred_images.device)
+
         # Total loss
         total = (
             self.mse_weight * mse
@@ -87,6 +97,7 @@ class TemporalCombinedLoss(nn.Module):
             + self.action_weight * action_loss
             + self.lpips_weight * lpips_val
             + self.temporal_weight * temporal_loss
+            + self.latent_temporal_weight * latent_temporal_loss
         )
 
         loss_dict = {
@@ -98,6 +109,9 @@ class TemporalCombinedLoss(nn.Module):
             "temporal": temporal_loss.item()
             if torch.is_tensor(temporal_loss)
             else temporal_loss,
+            "latent_temporal": latent_temporal_loss.item()
+            if torch.is_tensor(latent_temporal_loss)
+            else latent_temporal_loss,
         }
 
         return total, loss_dict

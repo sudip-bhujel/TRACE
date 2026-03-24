@@ -9,7 +9,7 @@ Available encoders:
 - ResidualGradientEncoder: Encoder with residual connections for better gradient flow
 """
 
-from typing import List
+from typing import List, Optional
 
 import torch
 import torch.nn as nn
@@ -79,26 +79,48 @@ class ResidualGradientEncoder(nn.Module):
 
     Uses a projection layer followed by stacked residual blocks.
     This helps with training deeper networks and preserves information flow.
+
+    The input projection can be factorized as:
+      gradient_dim -> projection_rank -> hidden_dim
+    This significantly reduces parameters versus a single giant
+    gradient_dim -> hidden_dim linear layer while still using the full
+    gradient vector.
     """
 
     def __init__(
         self,
         gradient_dim: int,
         latent_dim: int = 512,
-        hidden_dim: int = 2048,
+        hidden_dim: int = 768,
         num_blocks: int = 4,
         dropout: float = 0.1,
         expansion: int = 4,
+        projection_rank: Optional[int] = None,
     ):
         super().__init__()
 
-        # Project to hidden dimension
-        self.input_proj = nn.Sequential(
-            nn.Linear(gradient_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-        )
+        if projection_rank is None:
+            self.input_proj = nn.Sequential(
+                nn.Linear(gradient_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+            )
+        else:
+            if projection_rank <= 0:
+                raise ValueError(
+                    f"projection_rank must be > 0 or None, got {projection_rank}"
+                )
+            self.input_proj = nn.Sequential(
+                nn.Linear(gradient_dim, projection_rank),
+                nn.LayerNorm(projection_rank),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(projection_rank, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+            )
 
         # Stacked residual blocks
         self.blocks = nn.ModuleList(

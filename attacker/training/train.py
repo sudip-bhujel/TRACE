@@ -71,10 +71,12 @@ def train_epoch(
 
         # Forward pass with mixed precision (Flash Attention auto-enabled via SDPA)
         with torch.autocast(device_type=device.type, enabled=scaler is not None):
-            pred_images, pred_actions, _, _ = model(
+            pred_images, pred_actions, latents, _ = model(
                 gradients, use_flash_attention=use_flash_attention
             )
-            loss, loss_dict = criterion(pred_images, images, pred_actions, actions)
+            loss, loss_dict = criterion(
+                pred_images, images, pred_actions, actions, latents=latents
+            )
             loss = loss / accumulation_steps
 
         # NaN detection - skip bad batches to prevent training corruption
@@ -156,10 +158,12 @@ def validate(
             images = images.to(device)
             actions = actions.to(device)
 
-            pred_images, pred_actions, _, _ = model(
+            pred_images, pred_actions, latents, _ = model(
                 gradients, use_flash_attention=use_flash_attention
             )
-            loss, loss_dict = criterion(pred_images, images, pred_actions, actions)
+            loss, loss_dict = criterion(
+                pred_images, images, pred_actions, actions, latents=latents
+            )
 
             for k, v in loss_dict.items():
                 total_losses[k] += v
@@ -248,6 +252,10 @@ def train(
     num_transformer_layers: int = 4,
     num_heads: int = 8,
     encoder_hidden_dims: Optional[List[int]] = None,
+    encoder_hidden_dim: Optional[int] = None,
+    encoder_num_blocks: Optional[int] = None,
+    encoder_expansion: Optional[int] = None,
+    encoder_projection_rank: Optional[int] = None,
     encoder_type: str = "basic",
     decoder_type: str = "basic",
     dropout: float = 0.1,
@@ -271,6 +279,11 @@ def train(
     # Ablation: skip transformer
     skip_transformer: bool = False,
     is_causal: bool = True,
+    # Temporal model selection
+    temporal_model_type: str = "transformer",
+    ff_multiplier: int = 4,
+    use_rope: bool = False,
+    latent_temporal_weight: float = 0.0,
     # Ablation: cap dataset size
     max_sequences: Optional[int] = None,
     # Temporal dropout: fraction of timesteps to mask (0.0 = disabled)
@@ -431,11 +444,18 @@ def train(
         num_transformer_layers=num_transformer_layers,
         num_heads=num_heads,
         encoder_hidden_dims=encoder_hidden_dims,
+        encoder_hidden_dim=encoder_hidden_dim,
+        encoder_num_blocks=encoder_num_blocks,
+        encoder_expansion=encoder_expansion,
+        encoder_projection_rank=encoder_projection_rank,
         encoder_type=encoder_type,
         decoder_type=decoder_type,
         dropout=dropout,
         skip_transformer=skip_transformer,
         is_causal=is_causal,
+        temporal_model_type=temporal_model_type,
+        ff_multiplier=ff_multiplier,
+        use_rope=use_rope,
     ).to(device)
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -469,6 +489,7 @@ def train(
         temporal_weight=temporal_weight,
         lpips_weight=lpips_weight,
         lpips_net=lpips_net,
+        latent_temporal_weight=latent_temporal_weight,
     ).to(device)  # Move to device for VGG buffers
 
     if master_process:
@@ -550,7 +571,7 @@ def train(
         # Log train metrics (master only)
         if master_process:
             print(
-                f"Epoch {epoch}: Train Loss: {train_loss['total']:.4f} (MSE: {train_loss['mse']:.4f}, L1: {train_loss['l1']:.4f}, Act: {train_loss['action']:.4f}, Temp: {train_loss['temporal']:.4f}, LPIPS: {train_loss['lpips']:.4f}) | Acc: {train_loss['accuracy']:.2f}%"
+                f"Epoch {epoch}: Train Loss: {train_loss['total']:.4f} (MSE: {train_loss['mse']:.4f}, L1: {train_loss['l1']:.4f}, Act: {train_loss['action']:.4f}, Temp: {train_loss['temporal']:.4f}, LTemp: {train_loss.get('latent_temporal', 0):.4f}, LPIPS: {train_loss['lpips']:.4f}) | Acc: {train_loss['accuracy']:.2f}%"
             )
             if use_wandb:
                 log_dict = {
@@ -577,7 +598,7 @@ def train(
         # Log val metrics (master only)
         if master_process:
             print(
-                f"Epoch {epoch}: Val Loss: {val_loss['total']:.4f} (MSE: {val_loss['mse']:.4f}, L1: {val_loss['l1']:.4f}, Act: {val_loss['action']:.4f}, Temp: {val_loss['temporal']:.4f}, LPIPS: {val_loss['lpips']:.4f}) | Acc: {val_loss['accuracy']:.2f}%"
+                f"Epoch {epoch}: Val Loss: {val_loss['total']:.4f} (MSE: {val_loss['mse']:.4f}, L1: {val_loss['l1']:.4f}, Act: {val_loss['action']:.4f}, Temp: {val_loss['temporal']:.4f}, LTemp: {val_loss.get('latent_temporal', 0):.4f}, LPIPS: {val_loss['lpips']:.4f}) | Acc: {val_loss['accuracy']:.2f}%"
             )
             if use_wandb:
                 wandb.log(
@@ -723,6 +744,10 @@ if __name__ == "__main__":
         num_transformer_layers=model_cfg.get("num_transformer_layers", 4),
         num_heads=model_cfg.get("num_heads", 8),
         encoder_hidden_dims=model_cfg.get("encoder_hidden_dims", None),
+        encoder_hidden_dim=model_cfg.get("encoder_hidden_dim", None),
+        encoder_num_blocks=model_cfg.get("encoder_num_blocks", None),
+        encoder_expansion=model_cfg.get("encoder_expansion", None),
+        encoder_projection_rank=model_cfg.get("encoder_projection_rank", None),
         encoder_type=model_cfg.get("encoder_type", "basic"),
         decoder_type=model_cfg.get("decoder_type", "basic"),
         dropout=model_cfg.get("dropout", 0.1),
@@ -748,6 +773,10 @@ if __name__ == "__main__":
         # Ablation
         skip_transformer=model_cfg.get("skip_transformer", False),
         is_causal=model_cfg.get("is_causal", True),
+        temporal_model_type=model_cfg.get("temporal_model_type", "transformer"),
+        ff_multiplier=model_cfg.get("ff_multiplier", 4),
+        use_rope=model_cfg.get("use_rope", False),
+        latent_temporal_weight=loss_cfg.get("latent_temporal_weight", 0.0),
         max_sequences=data_cfg.get("max_sequences", None),
         gradient_mask_ratio=training_cfg.get("gradient_mask_ratio", 0.0),
     )
@@ -771,7 +800,14 @@ if __name__ == "__main__":
             num_transformer_layers=model_cfg.get("num_transformer_layers", 4),
             num_heads=model_cfg.get("num_heads", 8),
             encoder_hidden_dims=model_cfg.get("encoder_hidden_dims", None),
+            encoder_hidden_dim=model_cfg.get("encoder_hidden_dim", None),
+            encoder_num_blocks=model_cfg.get("encoder_num_blocks", None),
+            encoder_expansion=model_cfg.get("encoder_expansion", None),
+            encoder_projection_rank=model_cfg.get("encoder_projection_rank", None),
             encoder_type=model_cfg.get("encoder_type", "basic"),
             decoder_type=model_cfg.get("decoder_type", "basic"),
             skip_transformer=model_cfg.get("skip_transformer", False),
+            temporal_model_type=model_cfg.get("temporal_model_type", "transformer"),
+            ff_multiplier=model_cfg.get("ff_multiplier", 4),
+            use_rope=model_cfg.get("use_rope", False),
         )
