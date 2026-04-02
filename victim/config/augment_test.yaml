@@ -8,3 +8,10 @@ contrast: 0.2
 saturation: 0.2
 hue: 0.1
 seed: 42
+# PPO loss settings (for federated learning)
+use_ppo_loss: false
+ppo_clip_eps: 0.2
+ppo_vf_coef: 0.5
+ppo_ent_coef: 0.01
+gae_gamma: 0.99
+gae_lambda: 0.95

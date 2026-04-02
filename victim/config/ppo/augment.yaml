@@ -1,5 +1,5 @@
-input: "trajectory_data/small/gradients_train.h5"
-output: "trajectory_data/small/gradients_train_augmented.h5"
+input: "trajectory_data/ppo/gradients_train.h5"
+output: "trajectory_data/ppo/gradients_train_augmented.h5"
 checkpoint: "ckpts/victim/ppo_ai2thor_final.pt"
 num_augmentations: 2
 batch_size: 100
@@ -9,7 +9,7 @@ saturation: 0.2
 hue: 0.1
 seed: 42
 # PPO loss settings (for federated learning)
-use_ppo_loss: false
+use_ppo_loss: true
 ppo_clip_eps: 0.2
 ppo_vf_coef: 0.5
 ppo_ent_coef: 0.01

@@ -1,5 +1,5 @@
 # Gradient Capture Configuration
-# Usage: python -m ppo.capture_gradients --config config/capture/capture_108.yaml
+# Usage: python -m ppo.capture config/ppo/capture_train.yaml
 
 # Environment settings
 environment:
@@ -133,11 +133,11 @@ capture:
   steps_per_scene: 1000 # 1000 steps per scene x 108 scenes = 1,080,000 total (UNIFORM)
   gradient_layers: null # null = all layers
   # save_path: "trajectory_data/gradients_108.h5"
-  save_path: "trajectory_data/small/gradients_train.h5"
+  save_path: "trajectory_data/ppo/gradients_train.h5"
   compression: "gzip"
   shuffle_scenes: false # Not used in uniform mode
   # PPO loss settings (for federated learning)
-  use_ppo_loss: false # Set to true to use PPO loss instead of simple loss
+  use_ppo_loss: true # Set to true to use PPO loss instead of simple loss
   ppo_clip_eps: 0.2
   ppo_vf_coef: 0.5
   ppo_ent_coef: 0.01

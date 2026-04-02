@@ -2,7 +2,12 @@
 Gradient Capture Script for PPO Agent (Efficient Storage)
 
 This script captures gradients from a trained PPO model and saves them
-efficiently using HDF5 format with compression.
+using HDF5 format with compression.
+
+Two modes:
+1. Simple loss: per-step gradient capture with simple policy + value loss
+2. PPO loss: PPO-style per-step capture from a frozen checkpoint using
+   episode-buffered GAE/returns
 
 For each step in a trajectory, it saves:
 - Current observation (image)
@@ -21,7 +26,7 @@ import torch.nn.functional as F
 from omegaconf import OmegaConf
 
 from victim.environment import AI2THORNavEnv
-from victim.model import ActorCritic
+from victim.model import ActorCritic, compute_gae
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -42,6 +47,7 @@ def load_model(checkpoint_path: str, num_actions: int = 5) -> ActorCritic:
         print("Loaded model weights (old format)")
 
     model.eval()
+    model.requires_grad_(True)
     return model
 
 
@@ -52,47 +58,74 @@ def compute_gradients(
     gradient_layers: Optional[List[str]] = None,
     use_float16: bool = True,
 ) -> Dict[str, np.ndarray]:
-    """
-    Compute gradients of the loss w.r.t. model parameters.
-
-    Args:
-        model: The actor-critic model
-        observation: Input observation tensor (1, C, H, W)
-        action: Action taken
-        gradient_layers: List of layer names to capture (None = all)
-        use_float16: Store gradients as float16 to save space
-
-    Returns:
-        Dictionary mapping parameter names to gradient arrays
-    """
+    """Compute gradients for the simple probe loss."""
     model.zero_grad()
 
-    # Forward pass
     logits, value = model(observation)
     probs = F.softmax(logits, dim=-1)
     dist = torch.distributions.Categorical(probs)
 
-    # Compute loss
     log_prob = dist.log_prob(torch.tensor([action], device=device))
     policy_loss = -log_prob.mean()
     value_loss = value.mean()
     loss = policy_loss + 0.5 * value_loss
 
-    # Backward pass
     loss.backward()
 
-    # Collect gradients
     gradients = {}
     dtype = np.float16 if use_float16 else np.float32
-
     for name, param in model.named_parameters():
-        if param.grad is not None:
-            # Filter by layer names if specified
-            if gradient_layers is not None:
-                if not any(layer in name for layer in gradient_layers):
-                    continue
-            gradients[name] = param.grad.detach().cpu().numpy().astype(dtype)
+        if param.grad is None:
+            continue
+        if gradient_layers is not None and not any(
+            layer in name for layer in gradient_layers
+        ):
+            continue
+        gradients[name] = param.grad.detach().cpu().numpy().astype(dtype)
+    return gradients
 
+
+def compute_ppo_gradients(
+    model: ActorCritic,
+    observation: torch.Tensor,
+    action: torch.Tensor,
+    old_log_prob: torch.Tensor,
+    advantage: torch.Tensor,
+    returns: torch.Tensor,
+    clip_eps: float = 0.2,
+    vf_coef: float = 0.5,
+    ent_coef: float = 0.01,
+    gradient_layers: Optional[List[str]] = None,
+    use_float16: bool = True,
+) -> Dict[str, np.ndarray]:
+    """Compute gradients using the PPO-style loss used in capture mode."""
+    model.zero_grad()
+
+    logits, value = model(observation)
+    probs = F.softmax(logits, dim=-1)
+    dist = torch.distributions.Categorical(probs)
+
+    new_logp = dist.log_prob(action)
+    ratio = torch.exp(new_logp - old_log_prob)
+    surr1 = ratio * advantage
+    surr2 = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * advantage
+    policy_loss = -torch.min(surr1, surr2).mean()
+    value_loss = F.mse_loss(value, returns)
+    entropy = dist.entropy().mean()
+    loss = policy_loss + vf_coef * value_loss - ent_coef * entropy
+
+    loss.backward()
+
+    gradients = {}
+    dtype = np.float16 if use_float16 else np.float32
+    for name, param in model.named_parameters():
+        if param.grad is None:
+            continue
+        if gradient_layers is not None and not any(
+            layer in name for layer in gradient_layers
+        ):
+            continue
+        gradients[name] = param.grad.detach().cpu().numpy().astype(dtype)
     return gradients
 
 
@@ -104,6 +137,59 @@ def flatten_gradients(gradients: Dict[str, np.ndarray]) -> np.ndarray:
     return np.concatenate(flat_grads)
 
 
+class PPOGradientBuffer:
+    """Buffer episode data needed to compute PPO-style per-step gradients."""
+
+    def __init__(
+        self,
+        gamma: float = 0.99,
+        lam: float = 0.95,
+    ):
+        self.gamma = gamma
+        self.lam = lam
+        self.clear()
+
+    def add(
+        self,
+        obs: np.ndarray,
+        action: int,
+        reward: float,
+        done: bool,
+        value: float,
+        log_prob: float,
+    ) -> None:
+        self.obs_list.append(obs)
+        self.actions.append(action)
+        self.rewards.append(reward)
+        self.dones.append(done)
+        self.values.append(value)
+        self.log_probs.append(log_prob)
+
+    def compute_gae_and_returns(
+        self, next_value: float = 0.0
+    ) -> Tuple[List[float], List[float]]:
+        """Compute GAE advantages and returns with explicit bootstrap value."""
+        if len(self.dones) == 0:
+            return [], []
+        bootstrap = 0.0 if self.dones[-1] else next_value
+        values_for_gae = self.values + [bootstrap]
+        advantages, returns = compute_gae(
+            self.rewards, values_for_gae, self.dones, gamma=self.gamma, lam=self.lam
+        )
+        return advantages, returns
+
+    def clear(self) -> None:
+        self.obs_list: List[np.ndarray] = []
+        self.actions: List[int] = []
+        self.rewards: List[float] = []
+        self.dones: List[bool] = []
+        self.values: List[float] = []
+        self.log_probs: List[float] = []
+
+    def __len__(self) -> int:
+        return len(self.obs_list)
+
+
 def create_hdf5_dataset(
     save_path: str,
     num_steps: int,
@@ -111,67 +197,55 @@ def create_hdf5_dataset(
     image_shape: Tuple[int, int, int] = (3, 84, 84),
     compression: str = "gzip",
     compression_level: int = 4,
-):
+) -> None:
     """Create HDF5 file with pre-allocated datasets."""
     with h5py.File(save_path, "w") as f:
-        # Images - uint8 for efficiency
         f.create_dataset(
             "images",
             shape=(num_steps, *image_shape),
-            maxshape=(None, *image_shape),  # Allow unlimited resize
+            maxshape=(None, *image_shape),
             dtype=np.uint8,
             chunks=(1, *image_shape),
             compression=compression,
             compression_opts=compression_level,
         )
-
-        # Gradients - float16 for efficiency
         f.create_dataset(
             "gradients",
             shape=(num_steps, gradient_size),
-            maxshape=(None, gradient_size),  # Allow unlimited resize
+            maxshape=(None, gradient_size),
             dtype=np.float16,
             chunks=(1, gradient_size),
             compression=compression,
             compression_opts=compression_level,
         )
-
-        # Actions - int8 is enough for 5 actions
         f.create_dataset(
             "actions",
             shape=(num_steps,),
-            maxshape=(None,),  # Allow unlimited resize
+            maxshape=(None,),
             dtype=np.int8,
             compression=compression,
         )
-
-        # Rewards
         f.create_dataset(
             "rewards",
             shape=(num_steps,),
-            maxshape=(None,),  # Allow unlimited resize
+            maxshape=(None,),
             dtype=np.float32,
             compression=compression,
         )
-
-        # Episode indices (to know which episode each step belongs to)
         f.create_dataset(
             "episode_ids",
             shape=(num_steps,),
-            maxshape=(None,),  # Allow unlimited resize
+            maxshape=(None,),
             dtype=np.int32,
             compression=compression,
         )
-
-        # Done flags
         f.create_dataset(
             "done",
             shape=(num_steps,),
-            maxshape=(None,),  # Allow unlimited resize
+            maxshape=(None,),
             dtype=np.bool_,
             compression=compression,
         )
-
     print(f"Created HDF5 file: {save_path}")
 
 
@@ -184,24 +258,13 @@ def capture_and_save_streaming(
     gradient_layers: Optional[List[str]] = None,
     compression: str = "gzip",
     scenes: Optional[List[str]] = None,
-):
-    """
-    Capture trajectories and save directly to HDF5 (streaming).
-
-    This avoids keeping all data in memory.
-
-    Args:
-        scenes: List of scenes to shuffle between episodes. If None, uses env's current scene.
-    """
-    # First, do a test step to get gradient size
+) -> int:
+    """Capture trajectories using the simple probe loss."""
     obs = env.reset()
     obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
     test_grads = compute_gradients(model, obs_tensor, 0, gradient_layers)
-    flat_grads = flatten_gradients(test_grads)
-    gradient_size = len(flat_grads)
-
-    # Estimate total steps
-    estimated_steps = num_trajectories * (max_steps // 2)  # Conservative estimate
+    gradient_size = len(flatten_gradients(test_grads))
+    estimated_steps = num_trajectories * (max_steps // 2)
 
     print(
         f"Gradient size: {gradient_size:,} values ({gradient_size * 2 / 1024:.1f} KB per step as float16)"
@@ -210,7 +273,6 @@ def capture_and_save_streaming(
     if scenes and len(scenes) > 1:
         print(f"Shuffling across {len(scenes)} scenes: {scenes}")
 
-    # Create HDF5 file
     create_hdf5_dataset(
         save_path,
         num_steps=estimated_steps,
@@ -219,18 +281,16 @@ def capture_and_save_streaming(
         compression=compression,
     )
 
-    # Capture and save
     step_idx = 0
     episode_rewards = []
 
     with h5py.File(save_path, "a") as f:
         for traj_idx in range(num_trajectories):
-            # Round-robin scene selection for uniform distribution
-            if scenes and len(scenes) > 1:
-                scene = scenes[traj_idx % len(scenes)]
-                obs = env.reset(scene=scene)
-            else:
-                obs = env.reset()
+            obs = (
+                env.reset(scene=scenes[traj_idx % len(scenes)])
+                if scenes and len(scenes) > 1
+                else env.reset()
+            )
             done = False
             ep_steps = 0
             ep_reward = 0.0
@@ -239,25 +299,20 @@ def capture_and_save_streaming(
                 obs_tensor = torch.tensor(
                     obs, dtype=torch.float32, device=device
                 ).unsqueeze(0)
-
-                # Get action
                 with torch.no_grad():
-                    logits, value = model(obs_tensor)
+                    logits, _ = model(obs_tensor)
                     probs = F.softmax(logits, dim=-1)
                     dist = torch.distributions.Categorical(probs)
                     action = dist.sample().item()
 
-                # Compute gradients
                 gradients = compute_gradients(
                     model, obs_tensor.clone(), action, gradient_layers
                 )
                 flat_grads = flatten_gradients(gradients)
 
-                # Take step
                 next_obs, reward, done, info = env.step(action)
                 ep_reward += reward
 
-                # Resize datasets if needed
                 if step_idx >= f["images"].shape[0]:
                     new_size = step_idx + estimated_steps
                     for key in [
@@ -270,7 +325,6 @@ def capture_and_save_streaming(
                     ]:
                         f[key].resize(new_size, axis=0)
 
-                # Save to HDF5
                 f["images"][step_idx] = obs
                 f["gradients"][step_idx] = flat_grads
                 f["actions"][step_idx] = action
@@ -282,22 +336,15 @@ def capture_and_save_streaming(
                 step_idx += 1
                 ep_steps += 1
 
-            # Episode complete
             success = "✓" if info.get("distance", float("inf")) < 1.0 else "✗"
             episode_rewards.append(ep_reward)
             print(
-                f"Trajectory {traj_idx + 1:4d}/{num_trajectories} | "
-                f"Steps: {ep_steps:3d} | "
-                f"Reward: {ep_reward:7.2f} | "
-                f"Success: {success} | "
-                f"Total: {step_idx:,} steps"
+                f"Trajectory {traj_idx + 1:4d}/{num_trajectories} | Steps: {ep_steps:3d} | Reward: {ep_reward:7.2f} | Success: {success} | Total: {step_idx:,} steps"
             )
 
-        # Trim to actual size
         for key in ["images", "gradients", "actions", "rewards", "episode_ids", "done"]:
             f[key].resize(step_idx, axis=0)
 
-        # Save metadata
         f.attrs["num_trajectories"] = num_trajectories
         f.attrs["total_steps"] = step_idx
         f.attrs["gradient_size"] = gradient_size
@@ -305,8 +352,6 @@ def capture_and_save_streaming(
         f.attrs["success_rate"] = sum(1 for r in episode_rewards if r > 0) / len(
             episode_rewards
         )
-
-        # Save gradient layer names for reconstruction
         grad_names = sorted(test_grads.keys())
         f.attrs["gradient_names"] = [n.encode() for n in grad_names]
         f.attrs["gradient_shapes"] = [str(test_grads[n].shape) for n in grad_names]
@@ -323,29 +368,12 @@ def capture_uniform_per_scene(
     max_steps_per_episode: int = 100,
     gradient_layers: Optional[List[str]] = None,
     compression: str = "gzip",
-):
-    """
-    Capture a fixed number of steps from each scene for uniform distribution.
-
-    This ensures equal representation of all scenes regardless of episode length.
-
-    Args:
-        model: Trained PPO model
-        env: AI2THOR environment
-        save_path: Path to save HDF5 file
-        scenes: List of scene names to capture from
-        steps_per_scene: Target number of steps to capture from each scene
-        max_steps_per_episode: Maximum steps per episode before reset
-        gradient_layers: Specific layers to capture (None = all)
-        compression: HDF5 compression type
-    """
-    # First, do a test step to get gradient size
+) -> int:
+    """Capture a fixed number of steps from each scene for uniform distribution."""
     obs = env.reset(scene=scenes[0])
     obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
     test_grads = compute_gradients(model, obs_tensor, 0, gradient_layers)
-    flat_grads = flatten_gradients(test_grads)
-    gradient_size = len(flat_grads)
-
+    gradient_size = len(flatten_gradients(test_grads))
     total_steps = steps_per_scene * len(scenes)
 
     print(
@@ -355,7 +383,6 @@ def capture_uniform_per_scene(
         f"Gradient size: {gradient_size:,} values ({gradient_size * 2 / 1024:.1f} KB per step)"
     )
 
-    # Create HDF5 file
     create_hdf5_dataset(
         save_path,
         num_steps=total_steps,
@@ -371,13 +398,11 @@ def capture_uniform_per_scene(
         for scene_idx, scene in enumerate(scenes):
             scene_steps = 0
             scene_episodes = 0
-
             print(
                 f"\n[Scene {scene_idx + 1}/{len(scenes)}] {scene}: capturing {steps_per_scene} steps..."
             )
 
             while scene_steps < steps_per_scene:
-                # Reset to this specific scene
                 obs = env.reset(scene=scene)
                 done = False
                 ep_steps = 0
@@ -391,21 +416,17 @@ def capture_uniform_per_scene(
                     obs_tensor = torch.tensor(
                         obs, dtype=torch.float32, device=device
                     ).unsqueeze(0)
-
-                    # Get action from model
                     with torch.no_grad():
-                        logits, value = model(obs_tensor)
+                        logits, _ = model(obs_tensor)
                         probs = F.softmax(logits, dim=-1)
                         dist = torch.distributions.Categorical(probs)
                         action = dist.sample().item()
 
-                    # Compute gradients
                     gradients = compute_gradients(
                         model, obs_tensor.clone(), action, gradient_layers
                     )
                     flat_grads = flatten_gradients(gradients)
 
-                    # Take step
                     try:
                         next_obs, reward, done, info = env.step(action)
                     except Exception as e:
@@ -414,15 +435,11 @@ def capture_uniform_per_scene(
                         break
 
                     ep_reward += reward
-
-                    # Save to HDF5
                     f["images"][step_idx] = obs
                     f["gradients"][step_idx] = flat_grads
                     f["actions"][step_idx] = action
                     f["rewards"][step_idx] = reward
-                    f["episode_ids"][step_idx] = (
-                        scene_idx * 1000 + scene_episodes
-                    )  # Unique episode ID
+                    f["episode_ids"][step_idx] = scene_idx * 1000 + scene_episodes
                     f["done"][step_idx] = done
 
                     obs = next_obs
@@ -440,29 +457,22 @@ def capture_uniform_per_scene(
                 f"  -> {scene}: {scene_steps} steps, {scene_episodes} episodes, avg_reward={avg_reward:.2f}"
             )
 
-        # Trim to actual size (should be exact, but just in case)
         for key in ["images", "gradients", "actions", "rewards", "episode_ids", "done"]:
             if step_idx < f[key].shape[0]:
                 f[key].resize(step_idx, axis=0)
 
-        # Save metadata
         f.attrs["num_scenes"] = len(scenes)
         f.attrs["steps_per_scene"] = steps_per_scene
         f.attrs["total_steps"] = step_idx
         f.attrs["gradient_size"] = gradient_size
         f.attrs["capture_mode"] = "uniform_per_scene"
-
-        # Per-scene distribution summary
         for scene in scenes:
             f.attrs[f"scene_{scene}_steps"] = scene_stats[scene]["steps"]
             f.attrs[f"scene_{scene}_episodes"] = scene_stats[scene]["episodes"]
-
-        # Save gradient layer names
         grad_names = sorted(test_grads.keys())
         f.attrs["gradient_names"] = [n.encode() for n in grad_names]
         f.attrs["gradient_shapes"] = [str(test_grads[n].shape) for n in grad_names]
 
-    # Print summary
     print(f"\n{'=' * 60}")
     print("Uniform Capture Complete")
     print(f"{'=' * 60}")
@@ -477,21 +487,217 @@ def capture_uniform_per_scene(
     return step_idx
 
 
-def print_file_info(save_path: str):
+def capture_ppo_gradients(
+    model: ActorCritic,
+    env: AI2THORNavEnv,
+    save_path: str,
+    num_trajectories: int = 100,
+    max_steps: int = 200,
+    gradient_layers: Optional[List[str]] = None,
+    compression: str = "gzip",
+    scenes: Optional[List[str]] = None,
+    gamma: float = 0.99,
+    lam: float = 0.95,
+    clip_eps: float = 0.2,
+    vf_coef: float = 0.5,
+    ent_coef: float = 0.01,
+) -> int:
+    """
+    Capture per-step gradients using a PPO-style objective.
+
+    This is PPO-style per-step capture from a frozen checkpoint, not a client-level
+    federated update. The ratio is near 1.0 on the original observations because the
+    same checkpoint provides both old_log_prob and new_logp.
+    """
+    obs = env.reset()
+    obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+    action_tensor = torch.tensor(0, dtype=torch.long, device=device)
+    test_grads = compute_ppo_gradients(
+        model=model,
+        observation=obs_tensor,
+        action=action_tensor,
+        old_log_prob=torch.tensor(0.0, device=device),
+        advantage=torch.tensor(1.0, device=device),
+        returns=torch.tensor(1.0, device=device),
+        clip_eps=clip_eps,
+        vf_coef=vf_coef,
+        ent_coef=ent_coef,
+        gradient_layers=gradient_layers,
+    )
+    gradient_size = len(flatten_gradients(test_grads))
+    estimated_steps = num_trajectories * (max_steps // 2)
+
+    print("PPO Gradient Capture (per-step, frozen checkpoint)")
+    print(f"  PPO params: clip_eps={clip_eps}, vf_coef={vf_coef}, ent_coef={ent_coef}")
+    print(f"  GAE params: gamma={gamma}, lambda={lam}")
+    print(
+        f"Gradient size: {gradient_size:,} values ({gradient_size * 2 / 1024:.1f} KB per step)"
+    )
+    print(f"Estimated total steps: ~{estimated_steps:,}")
+
+    create_hdf5_dataset(
+        save_path,
+        num_steps=estimated_steps,
+        gradient_size=gradient_size,
+        image_shape=obs.shape,
+        compression=compression,
+    )
+
+    ppo_buffer = PPOGradientBuffer(gamma=gamma, lam=lam)
+    step_idx = 0
+    episode_rewards = []
+
+    with h5py.File(save_path, "a") as f:
+        for traj_idx in range(num_trajectories):
+            obs = (
+                env.reset(scene=scenes[traj_idx % len(scenes)])
+                if scenes and len(scenes) > 1
+                else env.reset()
+            )
+            done = False
+            ep_steps = 0
+            ep_reward = 0.0
+
+            while not done and ep_steps < max_steps:
+                obs_tensor = torch.tensor(
+                    obs, dtype=torch.float32, device=device
+                ).unsqueeze(0)
+                with torch.no_grad():
+                    logits, value = model(obs_tensor)
+                    probs = F.softmax(logits, dim=-1)
+                    dist = torch.distributions.Categorical(probs)
+                    action = dist.sample().item()
+                    log_prob = dist.log_prob(torch.tensor(action, device=device)).item()
+
+                next_obs, reward, done, info = env.step(action)
+                ep_reward += reward
+                ppo_buffer.add(
+                    obs=obs,
+                    action=action,
+                    reward=reward,
+                    done=done,
+                    value=value.item(),
+                    log_prob=log_prob,
+                )
+                obs = next_obs
+                ep_steps += 1
+
+            if done:
+                bootstrap_value = 0.0
+            else:
+                with torch.no_grad():
+                    next_obs_tensor = torch.tensor(
+                        obs, dtype=torch.float32, device=device
+                    ).unsqueeze(0)
+                    _, next_val = model(next_obs_tensor)
+                    bootstrap_value = next_val.item()
+
+            advantages, returns = ppo_buffer.compute_gae_and_returns(
+                next_value=bootstrap_value
+            )
+            if len(advantages) > 1:
+                adv_array = np.array(advantages)
+                adv_mean = adv_array.mean()
+                adv_std = adv_array.std() + 1e-8
+                advantages = [(a - adv_mean) / adv_std for a in advantages]
+
+            for step_in_episode in range(len(ppo_buffer)):
+                step_obs_tensor = torch.tensor(
+                    ppo_buffer.obs_list[step_in_episode],
+                    dtype=torch.float32,
+                    device=device,
+                ).unsqueeze(0)
+                step_action_tensor = torch.tensor(
+                    ppo_buffer.actions[step_in_episode], dtype=torch.long, device=device
+                )
+                step_old_logp_tensor = torch.tensor(
+                    ppo_buffer.log_probs[step_in_episode],
+                    dtype=torch.float32,
+                    device=device,
+                ).unsqueeze(0)
+                step_advantage_tensor = torch.tensor(
+                    advantages[step_in_episode], dtype=torch.float32, device=device
+                ).unsqueeze(0)
+                step_return_tensor = torch.tensor(
+                    returns[step_in_episode], dtype=torch.float32, device=device
+                ).unsqueeze(0)
+
+                grads = compute_ppo_gradients(
+                    model=model,
+                    observation=step_obs_tensor,
+                    action=step_action_tensor,
+                    old_log_prob=step_old_logp_tensor,
+                    advantage=step_advantage_tensor,
+                    returns=step_return_tensor,
+                    clip_eps=clip_eps,
+                    vf_coef=vf_coef,
+                    ent_coef=ent_coef,
+                    gradient_layers=gradient_layers,
+                )
+                step_flat_grads = flatten_gradients(grads)
+
+                if step_idx >= f["images"].shape[0]:
+                    new_size = step_idx + estimated_steps
+                    for key in [
+                        "images",
+                        "gradients",
+                        "actions",
+                        "rewards",
+                        "episode_ids",
+                        "done",
+                    ]:
+                        f[key].resize(new_size, axis=0)
+
+                f["images"][step_idx] = ppo_buffer.obs_list[step_in_episode]
+                f["gradients"][step_idx] = step_flat_grads
+                f["actions"][step_idx] = ppo_buffer.actions[step_in_episode]
+                f["rewards"][step_idx] = ppo_buffer.rewards[step_in_episode]
+                f["episode_ids"][step_idx] = traj_idx
+                f["done"][step_idx] = ppo_buffer.dones[step_in_episode]
+                step_idx += 1
+
+            ppo_buffer.clear()
+            success = "✓" if info.get("distance", float("inf")) < 1.0 else "✗"
+            episode_rewards.append(ep_reward)
+            print(
+                f"Trajectory {traj_idx + 1:4d}/{num_trajectories} | Steps: {ep_steps:3d} | Reward: {ep_reward:7.2f} | Success: {success} | Total: {step_idx:,} steps"
+            )
+
+        for key in ["images", "gradients", "actions", "rewards", "episode_ids", "done"]:
+            f[key].resize(step_idx, axis=0)
+
+        f.attrs["num_trajectories"] = num_trajectories
+        f.attrs["total_steps"] = step_idx
+        f.attrs["gradient_size"] = gradient_size
+        f.attrs["avg_reward"] = np.mean(episode_rewards)
+        f.attrs["success_rate"] = sum(1 for r in episode_rewards if r > 0) / len(
+            episode_rewards
+        )
+        f.attrs["loss_type"] = "ppo"
+        f.attrs["ppo_clip_eps"] = clip_eps
+        f.attrs["ppo_vf_coef"] = vf_coef
+        f.attrs["ppo_ent_coef"] = ent_coef
+        f.attrs["gae_gamma"] = gamma
+        f.attrs["gae_lambda"] = lam
+        grad_names = sorted(test_grads.keys())
+        f.attrs["gradient_names"] = [n.encode() for n in grad_names]
+        f.attrs["gradient_shapes"] = [str(test_grads[n].shape) for n in grad_names]
+
+    return step_idx
+
+
+def print_file_info(save_path: str) -> None:
     """Print information about the saved HDF5 file."""
     with h5py.File(save_path, "r") as f:
         print("\n" + "=" * 60)
         print("HDF5 File Information")
         print("=" * 60)
-
         print(f"File: {save_path}")
         file_size_mb = os.path.getsize(save_path) / (1024 * 1024)
         print(f"Size: {file_size_mb:.1f} MB")
-
         print("\nMetadata:")
         for key, value in f.attrs.items():
             print(f"  {key}: {value}")
-
         print("\nDatasets:")
         for key in f.keys():
             ds = f[key]
@@ -503,8 +709,6 @@ if __name__ == "__main__":
     assert len(sys.argv) > 1, "Usage: python capture.py <config_path>"
 
     cfg = OmegaConf.load(sys.argv[1])
-
-    # Extract settings from config
     env_cfg = cfg.get("environment", {})
     model_cfg = cfg.get("model", {})
     capture_cfg = cfg.get("capture", {})
@@ -513,6 +717,8 @@ if __name__ == "__main__":
         scenes = list(env_cfg.get("scenes"))
     elif "scene" in env_cfg:
         scenes = [env_cfg.get("scene")]
+    else:
+        scenes = ["FloorPlan1"]
 
     print("=" * 60)
     print("Efficient Gradient Capture for PPO Agent")
@@ -521,16 +727,13 @@ if __name__ == "__main__":
     print(f"Trajectories: {capture_cfg.get('num_trajectories')}")
     print(f"Checkpoint: {model_cfg.get('checkpoint')}")
 
-    # Create directory
     os.makedirs(os.path.dirname(capture_cfg.get("save_path")) or ".", exist_ok=True)
 
-    # Load model
     print(f"\nLoading model from: {model_cfg.get('checkpoint')}")
     model = load_model(
         model_cfg.get("checkpoint"), num_actions=model_cfg.get("num_actions", 5)
     )
 
-    # Create environment with first scene (will switch during capture)
     print(f"\nInitializing AI2-THOR environment (starting scene={scenes[0]})...")
     env = AI2THORNavEnv(
         scene=scenes[0],
@@ -539,16 +742,39 @@ if __name__ == "__main__":
         headless=env_cfg.get("headless"),
     )
 
-    # Check for uniform capture mode
+    use_ppo_loss = capture_cfg.get("use_ppo_loss", False)
     steps_per_scene = capture_cfg.get("steps_per_scene", None)
+    ppo_params = {
+        "gamma": capture_cfg.get("gae_gamma", 0.99),
+        "lam": capture_cfg.get("gae_lambda", 0.95),
+        "clip_eps": capture_cfg.get("ppo_clip_eps", 0.2),
+        "vf_coef": capture_cfg.get("ppo_vf_coef", 0.5),
+        "ent_coef": capture_cfg.get("ppo_ent_coef", 0.01),
+    }
 
     try:
-        if steps_per_scene and len(scenes) > 1:
-            # Uniform capture mode
+        if use_ppo_loss:
+            print("\n[PPO LOSS MODE] Capturing with PPO-style per-step objective...")
+            print(
+                f"  PPO params: clip_eps={ppo_params['clip_eps']}, vf_coef={ppo_params['vf_coef']}, ent_coef={ppo_params['ent_coef']}"
+            )
+            print(
+                f"  GAE params: gamma={ppo_params['gamma']}, lambda={ppo_params['lam']}"
+            )
+            total_steps = capture_ppo_gradients(
+                model=model,
+                env=env,
+                save_path=capture_cfg.get("save_path"),
+                num_trajectories=capture_cfg.get("num_trajectories", 100),
+                max_steps=env_cfg.get("max_steps", 200),
+                gradient_layers=capture_cfg.get("gradient_layers"),
+                scenes=scenes,
+                **ppo_params,
+            )
+        elif steps_per_scene and len(scenes) > 1:
             print(f"\n[UNIFORM MODE] Capturing {steps_per_scene} steps per scene...")
             if capture_cfg.get("gradient_layers"):
                 print(f"Capturing layers: {capture_cfg.get('gradient_layers')}")
-
             total_steps = capture_uniform_per_scene(
                 model=model,
                 env=env,
@@ -559,26 +785,22 @@ if __name__ == "__main__":
                 gradient_layers=capture_cfg.get("gradient_layers"),
             )
         else:
-            # Standard trajectory-based capture
             print(
                 f"\nCapturing {capture_cfg.get('num_trajectories')} trajectories across {len(scenes)} scene(s)..."
             )
             if capture_cfg.get("gradient_layers"):
                 print(f"Capturing layers: {capture_cfg.get('gradient_layers')}")
-
             total_steps = capture_and_save_streaming(
                 model=model,
                 env=env,
                 save_path=capture_cfg.get("save_path"),
-                num_trajectories=capture_cfg.get("num_trajectories"),
-                max_steps=env_cfg.get("max_steps"),
+                num_trajectories=capture_cfg.get("num_trajectories", 100),
+                max_steps=env_cfg.get("max_steps", 200),
                 gradient_layers=capture_cfg.get("gradient_layers"),
                 scenes=scenes,
             )
 
-        # Print summary
         print_file_info(capture_cfg.get("save_path"))
-
     finally:
         env.close()
         print("\nDone!")
