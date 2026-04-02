@@ -61,10 +61,10 @@ def recover_action_from_gradient(
 
 
 def total_variation_loss(images: torch.Tensor) -> torch.Tensor:
-    """Total variation regularization for spatial smoothness."""
-    diff_h = images[:, :, 1:, :] - images[:, :, :-1, :]
-    diff_w = images[:, :, :, 1:] - images[:, :, :, :-1]
-    return (diff_h.pow(2).mean() + diff_w.pow(2).mean()) / 2
+    """Anisotropic total variation."""
+    dx = torch.mean(torch.abs(images[:, :, :, :-1] - images[:, :, :, 1:]))
+    dy = torch.mean(torch.abs(images[:, :, :-1, :] - images[:, :, 1:, :]))
+    return dx + dy
 
 
 def _sorted_param_info(model: nn.Module):
