@@ -1,61 +1,64 @@
-# Temporal Gradient Inversion Training Configuration
-# Usage: uv run -m attacker.training.train ./attacker/config/train.yaml
+# Ablation: Sequence length T=4
+# Usage: uv run -m attacker.training.train ./attacker/config/ablation/train_t4.yaml
 
 device: auto
 
 data:
-  h5_path: trajectory_data/small/gradients_train_augmented.h5
+  h5_path: trajectory_data/ppo/gradients_train_augmented.h5
   gradient_dim: 936102
 
 model:
+  model_type: autoregressive
   sequence_length: 4
   latent_dim: 1024
   stride: 2
   num_transformer_layers: 6
   num_heads: 8
-  encoder_type: residual # Options: basic, residual, bottleneck, gated, hierarchical, moe
-  decoder_type: residual # Options: basic, residual, unet, style
-  encoder_hidden_dims: [4096, 2048, 1024] # Only used for 'basic' encoder
-  dropout: 0.1
+  encoder_type: residual
+  decoder_type: residual
   use_flash_attention: true
 
 training:
   num_epochs: 50
   batch_size: 8
-  accumulation_steps: 8 # Effective batch size = batch_size * accumulation_steps * num_gpus
+  accumulation_steps: 2
   learning_rate: 1e-4
   weight_decay: 1e-5
   num_workers: 4
 
-  # Learning rate schedule
-  lr_schedule: cosine # Options: none, cosine
+  lr_schedule: cosine
   warmup_epochs: 5
   min_lr: 1e-6
 
-  # Regularization
-  gradient_noise_scale: 0.0 # Add noise to gradients for regularization
+  gradient_noise_scale: 0.0
+
+  scheduled_sampling_start: 0.0
+  scheduled_sampling_end: 0.5
+  scheduled_sampling_warmup: 5
+
+  rollout_steps: 2
+  rollout_weight: 0.3
 
 loss:
   mse_weight: 1.0
   l1_weight: 0.5
-  action_weight: 0.1
-  temporal_weight: 0.1 # Temporal smoothness loss
-  lpips_weight: 0.2 # Perceptual loss (requires lpips package)
-  lpips_net: vgg # Options: vgg, alex, squeeze
-  dino_weight: 0.0 # DINOv2 semantic feature loss (0 = disabled)
-  dino_model: dinov2_vits14 # Options: dinov2_vits14, dinov2_vitb14, dinov2_vitl14
+  action_weight: 0.01
+  temporal_weight: 0.1
+  lpips_weight: 0.2
+  lpips_net: vgg
 
 output:
-  save_dir: ckpts/small/ablation/t4
+  save_dir: ckpts/autoregressive/ablation/t4
 
 eval:
   enabled: true
-  h5_path: trajectory_data/small/gradients_test.h5
+  h5_path: trajectory_data/ppo/gradients_test.h5
   num_sequences: 100
 
 wandb:
   enabled: true
   project: gradient-inversion
-  name: small_ablation_t4
+  name: ablation-t4
+  group: ablation
   entity: gradinversion
-  tags: ["small", "ablation", "t4"]
+  tags: ["ar", "ablation", "t4"]

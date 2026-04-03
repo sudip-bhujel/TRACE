@@ -4,10 +4,11 @@
 device: auto
 
 data:
-  h5_path: trajectory_data/small/gradients_train_augmented.h5
+  h5_path: trajectory_data/ppo/gradients_train_augmented.h5
   gradient_dim: 936102
 
 model:
+  model_type: autoregressive
   sequence_length: 8
   latent_dim: 1024
   stride: 2
@@ -15,14 +16,12 @@ model:
   num_heads: 8
   encoder_type: residual
   decoder_type: residual
-  encoder_hidden_dims: [4096, 2048, 1024]
-  dropout: 0.1
   use_flash_attention: true
 
 training:
   num_epochs: 50
   batch_size: 8
-  accumulation_steps: 8
+  accumulation_steps: 2
   learning_rate: 1e-4
   weight_decay: 1e-5
   num_workers: 4
@@ -33,27 +32,33 @@ training:
 
   gradient_noise_scale: 0.0
 
+  scheduled_sampling_start: 0.0
+  scheduled_sampling_end: 0.5
+  scheduled_sampling_warmup: 5
+
+  rollout_steps: 2
+  rollout_weight: 0.3
+
 loss:
   mse_weight: 1.0
   l1_weight: 0.5
-  action_weight: 0.1
+  action_weight: 0.01
   temporal_weight: 0.1
   lpips_weight: 0.0
   lpips_net: vgg
-  dino_weight: 0.0
-  dino_model: dinov2_vits14
 
 output:
-  save_dir: ckpts/small/ablation/no_lpips
+  save_dir: ckpts/autoregressive/ablation/no_lpips
 
 eval:
   enabled: true
-  h5_path: trajectory_data/small/gradients_test.h5
+  h5_path: trajectory_data/ppo/gradients_test.h5
   num_sequences: 100
 
 wandb:
   enabled: true
   project: gradient-inversion
-  name: small_ablation_no_lpips
+  name: ablation-no-lpips
+  group: ablation
   entity: gradinversion
-  tags: ["small", "ablation", "no-lpips"]
+  tags: ["ar", "ablation", "no-lpips"]

@@ -1,26 +1,27 @@
-# Temporal Gradient Inversion Evaluation Configuration
+# Autoregressive Gradient Inversion Evaluation Configuration
 # Usage: uv run -m attacker.evaluation.evaluate ./attacker/config/eval.yaml
 
 device: auto
 
 data:
-  h5_path: trajectory_data/eval_tf_108.h5
-  gradient_dim: 1048576 # Must match training
+  h5_path: trajectory_data/ppo/gradients_test.h5
+  gradient_dim: 936102
 
 model:
   # Architecture must match the trained checkpoint
+  model_type: autoregressive
   sequence_length: 8
-  stride: 8 # Non-overlapping for evaluation
+  stride: 2
   latent_dim: 1024
   num_transformer_layers: 6
   num_heads: 8
   encoder_type: residual
   decoder_type: residual
-  encoder_hidden_dims: [4096, 2048, 1024]
+  use_flash_attention: true
 
 eval:
-  checkpoint: ckpts/attacker_1024/best_model.pt
-  num_sequences: 20
+  checkpoint: ckpts/autoregressive/base/best_model.pt
+  num_sequences: 100
 
 output:
-  save_dir: eval_results/attacker_1024
+  save_dir: eval_results/autoregressive/base

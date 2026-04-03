@@ -7,11 +7,12 @@
 # Usage: uv run -m attacker.training.train ./attacker/config/finetune.yaml
 
 data:
-  h5_path: trajectory_data/eval_tf_108.h5
-  gradient_dim: 1048576 # 1M — must match base model
-  finetune_fraction: 0.4 # 10% of sequences per scene
+  h5_path: trajectory_data/ppo/gradients_test_augmented.h5
+  gradient_dim: 936102
+  finetune_fraction: 0.4
 
 model:
+  model_type: autoregressive
   sequence_length: 8
   latent_dim: 1024
   stride: 2
@@ -19,11 +20,9 @@ model:
   num_heads: 8
   encoder_type: residual
   decoder_type: residual
-  encoder_hidden_dims: [4096, 2048, 1024]
-  dropout: 0.1
   use_flash_attention: true
   # Load pretrained base model weights
-  pretrained_checkpoint: ckpts/attacker_1024/best_model.pt
+  pretrained_checkpoint: ckpts/autoregressive/base/best_model.pt
 
 training:
   num_epochs: 20
@@ -36,25 +35,35 @@ training:
   warmup_epochs: 2
   min_lr: 1e-7
 
+  gradient_noise_scale: 0.0
+
+  scheduled_sampling_start: 0.0
+  scheduled_sampling_end: 0.5
+  scheduled_sampling_warmup: 2
+
+  rollout_steps: 2
+  rollout_weight: 0.3
+
 loss:
   mse_weight: 1.0
   l1_weight: 0.5
-  action_weight: 0.1
+  action_weight: 0.01
   temporal_weight: 0.1
   lpips_weight: 0.2
   lpips_net: vgg
 
 output:
-  save_dir: ckpts/attacker_1024_finetuned
+  save_dir: ckpts/autoregressive/finetuned
 
 eval:
   enabled: true
-  h5_path: trajectory_data/eval_tf_108.h5
-  num_sequences: 20
+  h5_path: trajectory_data/ppo/gradients_test.h5
+  num_sequences: 100
 
 wandb:
   enabled: true
   project: gradient-inversion
-  name: attacker_1024_finetuned
+  name: ar-finetuned
+  group: finetune
   entity: gradinversion
-  tags: ["finetuned", "few-shot", "domain-adaptation"]
+  tags: ["ar", "finetuned", "few-shot", "domain-adaptation"]

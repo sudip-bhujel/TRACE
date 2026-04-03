@@ -1,5 +1,5 @@
-# Ablation: Remove L1 loss (keep MSE, action, temporal, LPIPS)
-# Usage: uv run -m attacker.training.train ./attacker/config/ablation/train_no_l1.yaml
+# Ablation: Sequence length T=12
+# Usage: uv run -m attacker.training.train ./attacker/config/ablation/train_t12.yaml
 
 device: auto
 
@@ -9,7 +9,7 @@ data:
 
 model:
   model_type: autoregressive
-  sequence_length: 8
+  sequence_length: 12
   latent_dim: 1024
   stride: 2
   num_transformer_layers: 6
@@ -41,14 +41,14 @@ training:
 
 loss:
   mse_weight: 1.0
-  l1_weight: 0.0
+  l1_weight: 0.5
   action_weight: 0.01
   temporal_weight: 0.1
   lpips_weight: 0.2
   lpips_net: vgg
 
 output:
-  save_dir: ckpts/autoregressive/ablation/no_l1
+  save_dir: ckpts/autoregressive/ablation/t12
 
 eval:
   enabled: true
@@ -58,7 +58,7 @@ eval:
 wandb:
   enabled: true
   project: gradient-inversion
-  name: ablation-no-l1
+  name: ablation-t12
   group: ablation
   entity: gradinversion
-  tags: ["ar", "ablation", "no-l1"]
+  tags: ["ar", "ablation", "t12"]
