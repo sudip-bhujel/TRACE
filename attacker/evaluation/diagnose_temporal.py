@@ -21,7 +21,7 @@ The config should include:
 import math
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -32,7 +32,6 @@ from torch.utils.data import DataLoader
 
 from attacker.data.dataset import TemporalGradientDataset
 from attacker.models.model import TemporalGradientInversion
-
 
 # ============================================================================
 # 1. Gradient cosine similarity
@@ -64,7 +63,9 @@ def gradient_cosine_similarity(
 
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.hist(sims, bins=50, edgecolor="black", alpha=0.7, color="#3498db")
-    ax.axvline(sims.mean(), color="red", linestyle="--", label=f"Mean: {sims.mean():.4f}")
+    ax.axvline(
+        sims.mean(), color="red", linestyle="--", label=f"Mean: {sims.mean():.4f}"
+    )
     ax.set_xlabel("Cosine Similarity")
     ax.set_ylabel("Count")
     ax.set_title("Gradient Cosine Similarity Between Consecutive Frames")
@@ -73,8 +74,10 @@ def gradient_cosine_similarity(
     plt.savefig(save_dir / "gradient_cosine_similarity.png", dpi=150)
     plt.close()
 
-    print(f"  Gradient cosine similarity: mean={sims.mean():.4f}, "
-          f"std={sims.std():.4f}, min={sims.min():.4f}, max={sims.max():.4f}")
+    print(
+        f"  Gradient cosine similarity: mean={sims.mean():.4f}, "
+        f"std={sims.std():.4f}, min={sims.min():.4f}, max={sims.max():.4f}"
+    )
 
     return {
         "mean": float(sims.mean()),
@@ -123,18 +126,19 @@ def _extract_attention_weights(
         qkv = attn.qkv_proj(layer.norm1(x))
         qkv = qkv.reshape(B, T, 3, attn.num_heads, attn.head_dim)
         qkv = qkv.permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
+        q, k, _ = qkv[0], qkv[1], qkv[2]
 
         # Apply RoPE if present
         if hasattr(attn, "use_rope") and attn.use_rope and hasattr(attn, "rope"):
             from attacker.models.transformer import apply_rotary_emb
+
             cos, sin = attn.rope(T)
             cos = cos.to(q.dtype).to(q.device)
             sin = sin.to(q.dtype).to(q.device)
             q, k = apply_rotary_emb(q, k, cos, sin)
 
         # Manual attention scores
-        scale = attn.head_dim ** -0.5
+        scale = attn.head_dim**-0.5
         scores = (q @ k.transpose(-2, -1)) * scale
 
         # Apply causal mask
@@ -247,15 +251,17 @@ def latent_similarity_analysis(
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
     ax1.hist(cos_arr, bins=50, edgecolor="black", alpha=0.7, color="#2ecc71")
-    ax1.axvline(cos_arr.mean(), color="red", linestyle="--",
-                label=f"Mean: {cos_arr.mean():.4f}")
+    ax1.axvline(
+        cos_arr.mean(), color="red", linestyle="--", label=f"Mean: {cos_arr.mean():.4f}"
+    )
     ax1.set_xlabel("Cosine Similarity")
     ax1.set_title("Latent Similarity: Before vs After Temporal Model")
     ax1.legend()
 
     ax2.hist(l2_arr, bins=50, edgecolor="black", alpha=0.7, color="#e74c3c")
-    ax2.axvline(l2_arr.mean(), color="blue", linestyle="--",
-                label=f"Mean: {l2_arr.mean():.4f}")
+    ax2.axvline(
+        l2_arr.mean(), color="blue", linestyle="--", label=f"Mean: {l2_arr.mean():.4f}"
+    )
     ax2.set_xlabel("L2 Distance")
     ax2.set_title("Latent L2 Distance: Before vs After Temporal Model")
     ax2.legend()
@@ -318,8 +324,15 @@ def per_timestep_psnr(
     stds = [std_psnr[t] for t in timesteps]
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.bar(timesteps, means, yerr=stds, capsize=3, color="#9b59b6", alpha=0.8,
-           edgecolor="black")
+    ax.bar(
+        timesteps,
+        means,
+        yerr=stds,
+        capsize=3,
+        color="#9b59b6",
+        alpha=0.8,
+        edgecolor="black",
+    )
     ax.set_xlabel("Timestep")
     ax.set_ylabel("PSNR (dB)")
     ax.set_title("Per-Timestep PSNR\n(Frame 0: no context → Frame T-1: full context)")
@@ -446,7 +459,9 @@ def diagnose(
 
 
 if __name__ == "__main__":
-    assert len(sys.argv) > 1, "Usage: python -m attacker.evaluation.diagnose_temporal <config.yaml>"
+    assert len(sys.argv) > 1, (
+        "Usage: python -m attacker.evaluation.diagnose_temporal <config.yaml>"
+    )
 
     cfg = OmegaConf.load(sys.argv[1])
     data_cfg = cfg.get("data", {})
@@ -461,8 +476,10 @@ if __name__ == "__main__":
 
     diagnose(
         h5_path=eval_cfg.get("h5_path", data_cfg.get("h5_path")),
-        checkpoint=eval_cfg.get("checkpoint",
-                                str(Path(output_cfg.get("save_dir", "ckpts")) / "best_model.pt")),
+        checkpoint=eval_cfg.get(
+            "checkpoint",
+            str(Path(output_cfg.get("save_dir", "ckpts")) / "best_model.pt"),
+        ),
         save_dir=str(Path(output_cfg.get("save_dir", "diagnostics")) / "diagnostics"),
         num_sequences=eval_cfg.get("num_sequences", 50),
         sequence_length=model_cfg.get("sequence_length", 8),

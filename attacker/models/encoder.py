@@ -91,7 +91,7 @@ class ResidualGradientEncoder(nn.Module):
         self,
         gradient_dim: int,
         latent_dim: int = 512,
-        hidden_dim: int = 768,
+        hidden_dim: int = 1024,
         num_blocks: int = 4,
         dropout: float = 0.1,
         expansion: int = 4,

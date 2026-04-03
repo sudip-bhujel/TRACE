@@ -31,11 +31,6 @@ def _math_only_sdpa_context():
     return nullcontext()
 
 
-# ---------------------------------------------------------------------------
-# Rotary Position Embeddings (RoPE)
-# ---------------------------------------------------------------------------
-
-
 class RotaryEmbedding(nn.Module):
     """Rotary Position Embedding (Su et al., 2021).
 

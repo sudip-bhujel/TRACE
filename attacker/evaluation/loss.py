@@ -43,6 +43,13 @@ class TemporalCombinedLoss(nn.Module):
         # LPIPS loss (only create if weight > 0)
         if lpips_weight > 0:
             self.lpips_loss = lpips.LPIPS(net=lpips_net).to(device)
+            # CRITICAL: The LPIPS VGG uses ReLU(inplace=True) which corrupts
+            # the autograd graph of upstream modules (e.g. decoder BatchNorm)
+            # when their outputs are passed through LPIPS.  Replace all
+            # inplace ReLUs with non-inplace variants.
+            for module in self.lpips_loss.modules():
+                if isinstance(module, nn.ReLU):
+                    module.inplace = False
         else:
             self.lpips_loss = None
 

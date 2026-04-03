@@ -37,10 +37,10 @@ class ImageDecoder(nn.Module):
         self.decoder = nn.Sequential(
             nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1),  # 21 -> 42
             nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1),  # 42 -> 84
             nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Conv2d(64, 3, 3, padding=1),  # 84 -> 84
             nn.Sigmoid(),
         )
@@ -80,12 +80,13 @@ class ResidualBlock2d(nn.Module):
 
     def __init__(self, channels: int):
         super().__init__()
+        num_groups = min(32, channels)
         self.block = nn.Sequential(
             nn.Conv2d(channels, channels, 3, padding=1),
-            nn.BatchNorm2d(channels),
-            nn.ReLU(inplace=True),
+            nn.GroupNorm(num_groups, channels),
+            nn.ReLU(),
             nn.Conv2d(channels, channels, 3, padding=1),
-            nn.BatchNorm2d(channels),
+            nn.GroupNorm(num_groups, channels),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -98,6 +99,9 @@ class ResidualImageDecoder(nn.Module):
 
     Adds residual blocks after each upsampling layer to preserve details
     and improve gradient flow during training.
+
+    Uses GroupNorm instead of BatchNorm to avoid inplace running-stat
+    updates that conflict with autoregressive rollout training.
     """
 
     def __init__(
@@ -116,21 +120,21 @@ class ResidualImageDecoder(nn.Module):
 
         # First upsample block with residuals
         self.up1 = nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1)
-        self.bn1 = nn.BatchNorm2d(128)
+        self.gn1 = nn.GroupNorm(32, 128)
         self.res1 = nn.Sequential(
             *[ResidualBlock2d(128) for _ in range(num_res_blocks)]
         )
 
         # Second upsample block with residuals
         self.up2 = nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1)
-        self.bn2 = nn.BatchNorm2d(64)
+        self.gn2 = nn.GroupNorm(32, 64)
         self.res2 = nn.Sequential(*[ResidualBlock2d(64) for _ in range(num_res_blocks)])
 
         # Final convolution
         self.final = nn.Sequential(
             nn.Conv2d(64, 32, 3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
+            nn.GroupNorm(16, 32),
+            nn.ReLU(),
             nn.Conv2d(32, 3, 3, padding=1),
             nn.Sigmoid(),
         )
@@ -151,10 +155,10 @@ class ResidualImageDecoder(nn.Module):
         h = self.fc(x_flat)
         h = h.view(-1, 256, self.init_size, self.init_size)
 
-        h = F.relu(self.bn1(self.up1(h)))
+        h = F.relu(self.gn1(self.up1(h)))
         h = self.res1(h)
 
-        h = F.relu(self.bn2(self.up2(h)))
+        h = F.relu(self.gn2(self.up2(h)))
         h = self.res2(h)
 
         images = self.final(h)

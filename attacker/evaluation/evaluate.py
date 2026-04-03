@@ -28,6 +28,7 @@ from attacker.evaluation.metrics import (
     print_per_timestep_results,
     print_results,
 )
+from attacker.models.autoregressive_model import AutoregressiveGradientInversion
 from attacker.models.model import TemporalGradientInversion
 
 ACTION_NAMES = ["MoveAhead", "RotateLeft", "RotateRight", "LookDown", "LookUp"]
@@ -52,6 +53,7 @@ def load_model(
     temporal_model_type: str = "transformer",
     ff_multiplier: int = 4,
     use_rope: bool = False,
+    model_type: str = "temporal",
     **kwargs,
 ) -> nn.Module:
     """Load trained temporal model from checkpoint."""
@@ -62,25 +64,45 @@ def load_model(
             "vae_model", "stabilityai/sd-vae-ft-mse"
         )
 
-    model = TemporalGradientInversion(
-        gradient_dim=gradient_dim,
-        latent_dim=latent_dim,
-        num_actions=num_actions,
-        num_transformer_layers=num_transformer_layers,
-        num_heads=num_heads,
-        encoder_hidden_dims=encoder_hidden_dims,
-        encoder_hidden_dim=encoder_hidden_dim,
-        encoder_num_blocks=encoder_num_blocks,
-        encoder_expansion=encoder_expansion,
-        encoder_projection_rank=encoder_projection_rank,
-        encoder_type=encoder_type,
-        decoder_type=decoder_type,
-        skip_transformer=skip_transformer,
-        temporal_model_type=temporal_model_type,
-        ff_multiplier=ff_multiplier,
-        use_rope=use_rope,
-        **decoder_kwargs,
-    ).to(device)
+    if model_type == "autoregressive":
+        model = AutoregressiveGradientInversion(
+            gradient_dim=gradient_dim,
+            latent_dim=latent_dim,
+            num_actions=num_actions,
+            num_transformer_layers=num_transformer_layers,
+            num_heads=num_heads,
+            encoder_hidden_dims=encoder_hidden_dims,
+            encoder_hidden_dim=encoder_hidden_dim,
+            encoder_num_blocks=encoder_num_blocks,
+            encoder_expansion=encoder_expansion,
+            encoder_projection_rank=encoder_projection_rank,
+            encoder_type=encoder_type,
+            decoder_type=decoder_type,
+            temporal_model_type=temporal_model_type,
+            ff_multiplier=ff_multiplier,
+            use_rope=use_rope,
+            **decoder_kwargs,
+        ).to(device)
+    else:
+        model = TemporalGradientInversion(
+            gradient_dim=gradient_dim,
+            latent_dim=latent_dim,
+            num_actions=num_actions,
+            num_transformer_layers=num_transformer_layers,
+            num_heads=num_heads,
+            encoder_hidden_dims=encoder_hidden_dims,
+            encoder_hidden_dim=encoder_hidden_dim,
+            encoder_num_blocks=encoder_num_blocks,
+            encoder_expansion=encoder_expansion,
+            encoder_projection_rank=encoder_projection_rank,
+            encoder_type=encoder_type,
+            decoder_type=decoder_type,
+            skip_transformer=skip_transformer,
+            temporal_model_type=temporal_model_type,
+            ff_multiplier=ff_multiplier,
+            use_rope=use_rope,
+            **decoder_kwargs,
+        ).to(device)
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
@@ -133,6 +155,7 @@ def evaluate_and_save_reconstructions(
     enhancer: nn.Module = None,
     enable_fid: bool = True,
     num_actions: int = 5,
+    model_type: str = "temporal",
 ):
     """
     Run evaluation on test data, compute comprehensive metrics, and save
@@ -171,7 +194,12 @@ def evaluate_and_save_reconstructions(
         actions = actions[:1]
 
         with torch.no_grad():
-            pred_images, pred_actions, _, _ = model(gradients)
+            if model_type == "autoregressive":
+                pred_images, pred_actions, _, _ = model(
+                    gradients, teacher_forcing=False
+                )
+            else:
+                pred_images, pred_actions, _, _ = model(gradients)
             if enhancer is not None:
                 B, T, C, H, W = pred_images.shape
                 flat = pred_images.reshape(B * T, C, H, W).clamp(0, 1)
@@ -286,6 +314,7 @@ def evaluate(
     temporal_model_type: str = "transformer",
     ff_multiplier: int = 4,
     use_rope: bool = False,
+    model_type: str = "temporal",
     **kwargs,
 ):
     """Main evaluation function."""
@@ -347,6 +376,7 @@ def evaluate(
         temporal_model_type=temporal_model_type,
         ff_multiplier=ff_multiplier,
         use_rope=use_rope,
+        model_type=model_type,
         **kwargs,
     )
 
@@ -377,6 +407,7 @@ def evaluate(
         enhancer=enhancer,
         enable_fid=enable_fid,
         num_actions=num_actions,
+        model_type=model_type,
     )
 
 
@@ -422,6 +453,7 @@ if __name__ == "__main__":
         temporal_model_type=model_cfg.get("temporal_model_type", "transformer"),
         ff_multiplier=model_cfg.get("ff_multiplier", 4),
         use_rope=model_cfg.get("use_rope", False),
+        model_type=model_cfg.get("model_type", "temporal"),
         vae_model=model_cfg.get("vae_model", "stabilityai/sd-vae-ft-mse"),
         enhancer_checkpoint=eval_cfg.get("enhancer_checkpoint", ""),
     )

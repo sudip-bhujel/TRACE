@@ -14,12 +14,15 @@ Usage:
 """
 
 import csv
+import json
 import math
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn as nn
 from omegaconf import OmegaConf
@@ -114,6 +117,8 @@ def evaluate_optimization_baseline(
     # action_labels = ACTION_NAMES[:num_actions]
 
     data_iter = iter(dataloader)
+    total_time = 0.0
+    num_images = 0
 
     for seq_idx in range(num_sequences):
         try:
@@ -127,7 +132,13 @@ def evaluate_optimization_baseline(
         actions = actions[:1]
 
         print(f"  [{name}] Sequence {seq_idx + 1}/{num_sequences} ...")
+        seq_start = time.perf_counter()
         pred_images, pred_actions = baseline.reconstruct(gradients)
+        seq_elapsed = time.perf_counter() - seq_start
+        total_time += seq_elapsed
+
+        B, T = images.shape[:2]
+        num_images += B * T
 
         pred_images = pred_images.detach()
         pred_actions = pred_actions.detach()
@@ -165,6 +176,12 @@ def evaluate_optimization_baseline(
         plt.close()
 
     results = metrics.compute()
+    # Add timing metrics
+    results["inference_time_per_image_sec"] = (
+        total_time / num_images if num_images > 0 else 0.0
+    )
+    results["inference_time_total_sec"] = total_time
+    results["inference_time_num_images"] = num_images
     metrics.save(save_dir / f"{name.lower()}_metrics.json")
     return results
 
@@ -192,6 +209,10 @@ def evaluate_learned_baseline(
     data_iter = iter(dataloader)
     evaluated = 0
 
+    # Timing accumulation
+    total_time = 0.0
+    num_images = 0
+
     for seq_idx in range(num_sequences):
         try:
             gradients, images, actions = next(data_iter)
@@ -203,8 +224,14 @@ def evaluate_learned_baseline(
         images = images[:1]
         actions = actions[:1]
 
+        seq_start = time.perf_counter()
         with torch.no_grad():
             pred_images, pred_actions, _, _ = model(gradients)
+        seq_elapsed = time.perf_counter() - seq_start
+        total_time += seq_elapsed
+
+        B, T = images.shape[:2]
+        num_images += B * T
 
         metrics.update(pred_images, images, pred_actions, actions)
 
@@ -244,6 +271,12 @@ def evaluate_learned_baseline(
         )
 
     results = metrics.compute()
+    # Add timing metrics
+    results["inference_time_per_image_sec"] = (
+        total_time / num_images if num_images > 0 else 0.0
+    )
+    results["inference_time_total_sec"] = total_time
+    results["inference_time_num_images"] = num_images
     metrics.save(save_dir / "singleframe_metrics.json")
     return results
 
@@ -252,7 +285,15 @@ def evaluate_learned_baseline(
 # CSV output
 # ============================================================================
 
-METRIC_COLUMNS = ["mse", "psnr", "ssim", "lpips", "fid", "action_accuracy"]
+METRIC_COLUMNS = [
+    "mse",
+    "psnr",
+    "ssim",
+    "lpips",
+    "fid",
+    "action_accuracy",
+    "inference_time_per_image_sec",
+]
 
 
 def save_method_csv(name: str, results: dict, path: Path):
@@ -266,6 +307,27 @@ def save_method_csv(name: str, results: dict, path: Path):
             std = results.get(f"{key}_std", "")
             writer.writerow([key, val, std])
         writer.writerow(["num_images", results.get("num_images", 0), ""])
+        writer.writerow(
+            [
+                "inference_time_per_image_sec",
+                results.get("inference_time_per_image_sec", ""),
+                "",
+            ]
+        )
+        writer.writerow(
+            [
+                "inference_time_total_sec",
+                results.get("inference_time_total_sec", ""),
+                "",
+            ]
+        )
+        writer.writerow(
+            [
+                "inference_time_num_images",
+                results.get("inference_time_num_images", ""),
+                "",
+            ]
+        )
     print(f"  Metrics CSV saved to: {path}")
 
 
@@ -468,9 +530,9 @@ def evaluate_baselines(
 
 
 if __name__ == "__main__":
-    assert (
-        len(sys.argv) > 1
-    ), "Usage: uv run -m attacker.evaluate_baselines <config_path>"
+    assert len(sys.argv) > 1, (
+        "Usage: uv run -m attacker.evaluate_baselines <config_path>"
+    )
 
     cfg = OmegaConf.load(sys.argv[1])
     print(f"Loaded config from {sys.argv[1]}")

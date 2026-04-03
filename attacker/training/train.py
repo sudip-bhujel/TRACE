@@ -24,6 +24,7 @@ import wandb
 from attacker.data.dataset import TemporalGradientDataset
 from attacker.evaluation.evaluate import evaluate
 from attacker.evaluation.loss import TemporalCombinedLoss
+from attacker.models.autoregressive_model import AutoregressiveGradientInversion
 from attacker.models.model import TemporalGradientInversion
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -41,6 +42,10 @@ def train_epoch(
     use_flash_attention: bool = True,
     gradient_noise_scale: float = 0.0,
     gradient_mask_ratio: float = 0.0,
+    model_type: str = "temporal",
+    sampling_prob: float = 0.0,
+    rollout_steps: int = 0,
+    rollout_weight: float = 0.0,
 ) -> dict:
     """Train for one epoch."""
     model.train()
@@ -49,34 +54,65 @@ def train_epoch(
     total = 0
 
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
-    optimizer.zero_grad()
-
     for gradients, images, actions in pbar:
         gradients = gradients.to(device)
         images = images.to(device)
         actions = actions.to(device)
 
-        # Add gradient noise for regularization (prevents overfitting)
+        # Augmentation: gradient noise
         if gradient_noise_scale > 0:
-            gradients = gradients + torch.randn_like(gradients) * gradient_noise_scale
+            grad_std = gradients.std(dim=-1, keepdim=True).clamp(min=1e-6)
+            gradients = gradients + gradient_noise_scale * grad_std * torch.randn_like(
+                gradients
+            )
 
-        # Temporal dropout: randomly zero out entire timesteps to force
-        # the transformer to reconstruct masked frames from temporal context.
-        if gradient_mask_ratio > 0 and gradients.ndim == 3:
+        # Augmentation: gradient masking
+        if gradient_mask_ratio > 0:
             mask = (
-                torch.rand(gradients.shape[0], gradients.shape[1], 1, device=device)
+                torch.rand(gradients.shape[:-1], device=device).unsqueeze(-1)
                 > gradient_mask_ratio
             ).float()
             gradients = gradients * mask
 
         # Forward pass with mixed precision (Flash Attention auto-enabled via SDPA)
+        # For autoregressive models, a single model() call computes both the
+        # primary output AND rollout (if rollout_steps > 0). This is required
+        # for DDP: calling the model twice causes DDP's per-parameter backward
+        # hooks to fire twice for shared params (e.g. start_token).
         with torch.autocast(device_type=device.type, enabled=scaler is not None):
-            pred_images, pred_actions, latents, _ = model(
-                gradients, use_flash_attention=use_flash_attention
-            )
+            if model_type == "autoregressive":
+                pred_images, pred_actions, latents, ro_result = model(
+                    gradients,
+                    images=images,
+                    teacher_forcing=True,
+                    sampling_prob=sampling_prob,
+                    rollout_steps=rollout_steps if rollout_weight > 0 else 0,
+                    use_flash_attention=use_flash_attention,
+                )
+            else:
+                pred_images, pred_actions, latents, ro_result = model(
+                    gradients, use_flash_attention=use_flash_attention
+                )
             loss, loss_dict = criterion(
                 pred_images, images, pred_actions, actions, latents=latents
             )
+
+            # Add rollout loss if present
+            if ro_result is not None and rollout_weight > 0:
+                ro_imgs, ro_acts, ro_lats, t_start = ro_result
+                t_end = t_start + ro_imgs.shape[1]
+                ro_gt_imgs = images[:, t_start:t_end]
+                ro_gt_acts = actions[:, t_start:t_end]
+                ro_loss, _ = criterion(
+                    ro_imgs,
+                    ro_gt_imgs,
+                    ro_acts,
+                    ro_gt_acts,
+                    latents=ro_lats,
+                )
+                loss = loss + rollout_weight * ro_loss
+                loss_dict["rollout"] = ro_loss.item()
+
             loss = loss / accumulation_steps
 
         # NaN detection - skip bad batches to prevent training corruption
@@ -88,7 +124,11 @@ def train_epoch(
         # Backward
         if scaler is not None:
             scaler.scale(loss).backward()
-            if (pbar.n + 1) % accumulation_steps == 0:
+        else:
+            loss.backward()
+
+        if (pbar.n + 1) % accumulation_steps == 0:
+            if scaler is not None:
                 scaler.unscale_(optimizer)
                 # Check for NaN gradients before stepping
                 valid_grads = True
@@ -109,9 +149,7 @@ def train_epoch(
                     )
                 scaler.update()
                 optimizer.zero_grad()
-        else:
-            loss.backward()
-            if (pbar.n + 1) % accumulation_steps == 0:
+            else:
                 torch.nn.utils.clip_grad_norm_(
                     model.parameters(), max_norm=0.5
                 )  # Tighter clipping
@@ -145,6 +183,7 @@ def validate(
     criterion: nn.Module,
     device: torch.device,
     use_flash_attention: bool = True,
+    model_type: str = "temporal",
 ) -> dict:
     """Validate the model."""
     model.eval()
@@ -158,9 +197,17 @@ def validate(
             images = images.to(device)
             actions = actions.to(device)
 
-            pred_images, pred_actions, latents, _ = model(
-                gradients, use_flash_attention=use_flash_attention
-            )
+            if model_type == "autoregressive":
+                pred_images, pred_actions, latents, _ = model(
+                    gradients,
+                    images=images,
+                    teacher_forcing=True,
+                    use_flash_attention=use_flash_attention,
+                )
+            else:
+                pred_images, pred_actions, latents, _ = model(
+                    gradients, use_flash_attention=use_flash_attention
+                )
             loss, loss_dict = criterion(
                 pred_images, images, pred_actions, actions, latents=latents
             )
@@ -186,6 +233,7 @@ def save_temporal_reconstructions(
     save_path: Path,
     num_sequences: int = 2,
     use_flash_attention: bool = True,
+    model_type: str = "temporal",
 ):
     """Save sample reconstructions showing temporal progression."""
     model.eval()
@@ -197,9 +245,17 @@ def save_temporal_reconstructions(
     actions = actions[:num_sequences]
 
     with torch.no_grad():
-        pred_images, pred_actions, _, _ = model(
-            gradients, use_flash_attention=use_flash_attention
-        )
+        if model_type == "autoregressive":
+            pred_images, pred_actions, _, _ = model(
+                gradients,
+                images=images.to(device),
+                teacher_forcing=True,
+                use_flash_attention=use_flash_attention,
+            )
+        else:
+            pred_images, pred_actions, _, _ = model(
+                gradients, use_flash_attention=use_flash_attention
+            )
 
     pred_images = pred_images.cpu()
     pred_labels = pred_actions.argmax(dim=-1).cpu()
@@ -240,7 +296,7 @@ def train(
     h5_path: str = "trajectory_data/gradients.h5",
     num_epochs: int = 50,
     batch_size: int = 2,
-    accumulation_steps: int = 8,
+    accumulation_steps: int = 1,
     learning_rate: float = 1e-4,
     device: Union[str, torch.device] = "auto",
     save_dir: Union[str, Path] = "ckpts/attacker_temporal",
@@ -288,6 +344,15 @@ def train(
     max_sequences: Optional[int] = None,
     # Temporal dropout: fraction of timesteps to mask (0.0 = disabled)
     gradient_mask_ratio: float = 0.0,
+    # Model type: "temporal" (existing) or "autoregressive" (new)
+    model_type: str = "temporal",
+    # Scheduled sampling (autoregressive only)
+    scheduled_sampling_start: float = 0.0,
+    scheduled_sampling_end: float = 0.0,
+    scheduled_sampling_warmup: int = 5,
+    # Short rollout loss (autoregressive only)
+    rollout_steps: int = 0,
+    rollout_weight: float = 0.0,
 ):
     """
     Main training function for temporal model.
@@ -314,11 +379,6 @@ def train(
         torch.cuda.set_device(device)
         master_process = ddp_rank == 0  # Only rank 0 logs/saves
         seed_offset = ddp_rank  # Each process gets a different seed
-        # Scale down gradient accumulation per process
-        assert accumulation_steps % ddp_world_size == 0, (
-            f"accumulation_steps ({accumulation_steps}) must be divisible by world_size ({ddp_world_size})"
-        )
-        accumulation_steps = accumulation_steps // ddp_world_size
     else:
         # Single GPU / CPU training
         master_process = True
@@ -437,26 +497,46 @@ def train(
         print(f"  Number of actions: {num_actions}")
 
     # Create model (Flash Attention auto-enabled by PyTorch 2.0+ with mixed precision)
-    model: nn.Module = TemporalGradientInversion(
-        gradient_dim=actual_gradient_dim,
-        latent_dim=latent_dim,
-        num_actions=num_actions,
-        num_transformer_layers=num_transformer_layers,
-        num_heads=num_heads,
-        encoder_hidden_dims=encoder_hidden_dims,
-        encoder_hidden_dim=encoder_hidden_dim,
-        encoder_num_blocks=encoder_num_blocks,
-        encoder_expansion=encoder_expansion,
-        encoder_projection_rank=encoder_projection_rank,
-        encoder_type=encoder_type,
-        decoder_type=decoder_type,
-        dropout=dropout,
-        skip_transformer=skip_transformer,
-        is_causal=is_causal,
-        temporal_model_type=temporal_model_type,
-        ff_multiplier=ff_multiplier,
-        use_rope=use_rope,
-    ).to(device)
+    if model_type == "autoregressive":
+        model: nn.Module = AutoregressiveGradientInversion(
+            gradient_dim=actual_gradient_dim,
+            latent_dim=latent_dim,
+            num_actions=num_actions,
+            num_transformer_layers=num_transformer_layers,
+            num_heads=num_heads,
+            encoder_hidden_dims=encoder_hidden_dims,
+            encoder_hidden_dim=encoder_hidden_dim,
+            encoder_num_blocks=encoder_num_blocks,
+            encoder_expansion=encoder_expansion,
+            encoder_projection_rank=encoder_projection_rank,
+            encoder_type=encoder_type,
+            decoder_type=decoder_type,
+            dropout=dropout,
+            temporal_model_type=temporal_model_type,
+            ff_multiplier=ff_multiplier,
+            use_rope=use_rope,
+        ).to(device)
+    else:
+        model = TemporalGradientInversion(
+            gradient_dim=actual_gradient_dim,
+            latent_dim=latent_dim,
+            num_actions=num_actions,
+            num_transformer_layers=num_transformer_layers,
+            num_heads=num_heads,
+            encoder_hidden_dims=encoder_hidden_dims,
+            encoder_hidden_dim=encoder_hidden_dim,
+            encoder_num_blocks=encoder_num_blocks,
+            encoder_expansion=encoder_expansion,
+            encoder_projection_rank=encoder_projection_rank,
+            encoder_type=encoder_type,
+            decoder_type=decoder_type,
+            dropout=dropout,
+            skip_transformer=skip_transformer,
+            is_causal=is_causal,
+            temporal_model_type=temporal_model_type,
+            ff_multiplier=ff_multiplier,
+            use_rope=use_rope,
+        ).to(device)
 
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     if master_process:
@@ -478,7 +558,11 @@ def train(
 
     # Wrap model with DDP
     if ddp:
-        model = DDP(model, device_ids=[ddp_local_rank])
+        model = DDP(
+            model,
+            device_ids=[ddp_local_rank],
+            find_unused_parameters=(model_type == "autoregressive"),
+        )
     raw_model = cast(nn.Module, model.module if ddp else model)  # Unwrap for saving
 
     # Loss and optimizer
@@ -553,6 +637,21 @@ def train(
         if ddp and train_sampler is not None:
             train_sampler.set_epoch(epoch)
 
+        # Compute scheduled sampling probability for this epoch
+        if epoch <= scheduled_sampling_warmup:
+            sampling_prob = 0.0
+        else:
+            progress = (epoch - scheduled_sampling_warmup) / max(
+                1, num_epochs - scheduled_sampling_warmup
+            )
+            sampling_prob = (
+                scheduled_sampling_start
+                + (scheduled_sampling_end - scheduled_sampling_start) * progress
+            )
+
+        if master_process and model_type == "autoregressive" and sampling_prob > 0:
+            print(f"  Scheduled sampling prob: {sampling_prob:.3f}")
+
         train_loss = train_epoch(
             model,
             train_loader,
@@ -565,6 +664,10 @@ def train(
             use_flash_attention=use_flash_attention,
             gradient_noise_scale=gradient_noise_scale,
             gradient_mask_ratio=gradient_mask_ratio,
+            model_type=model_type,
+            sampling_prob=sampling_prob,
+            rollout_steps=rollout_steps,
+            rollout_weight=rollout_weight,
         )
         train_losses.append(train_loss["total"])
 
@@ -592,6 +695,7 @@ def train(
             criterion,
             device,
             use_flash_attention=use_flash_attention,
+            model_type=model_type,
         )
         val_losses.append(val_loss["total"])
 
@@ -641,6 +745,7 @@ def train(
                 device,
                 save_dir / f"recon_epoch_{epoch:03d}.png",
                 use_flash_attention=use_flash_attention,
+                model_type=model_type,
             )
 
     # Save final model (master only)
@@ -732,7 +837,7 @@ if __name__ == "__main__":
         h5_path=data_cfg.get("h5_path", "trajectory_data/gradients.h5"),
         num_epochs=num_epochs,
         batch_size=training_cfg.get("batch_size", 2),
-        accumulation_steps=training_cfg.get("accumulation_steps", 8),
+        accumulation_steps=training_cfg.get("accumulation_steps", 1),
         learning_rate=training_cfg.get("learning_rate", 1e-4),
         device=cfg.get("device", "auto"),
         save_dir=save_dir,
@@ -779,6 +884,13 @@ if __name__ == "__main__":
         latent_temporal_weight=loss_cfg.get("latent_temporal_weight", 0.0),
         max_sequences=data_cfg.get("max_sequences", None),
         gradient_mask_ratio=training_cfg.get("gradient_mask_ratio", 0.0),
+        model_type=model_cfg.get("model_type", "temporal"),
+        # Scheduled sampling & rollout
+        scheduled_sampling_start=training_cfg.get("scheduled_sampling_start", 0.0),
+        scheduled_sampling_end=training_cfg.get("scheduled_sampling_end", 0.0),
+        scheduled_sampling_warmup=training_cfg.get("scheduled_sampling_warmup", 5),
+        rollout_steps=training_cfg.get("rollout_steps", 0),
+        rollout_weight=training_cfg.get("rollout_weight", 0.0),
     )
 
     # Run evaluation on best model after training (master process only)
@@ -810,4 +922,5 @@ if __name__ == "__main__":
             temporal_model_type=model_cfg.get("temporal_model_type", "transformer"),
             ff_multiplier=model_cfg.get("ff_multiplier", 4),
             use_rope=model_cfg.get("use_rope", False),
+            model_type=model_cfg.get("model_type", "temporal"),
         )
