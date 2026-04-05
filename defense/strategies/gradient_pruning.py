@@ -1,20 +1,7 @@
 """
 Gradient Pruning Defense.
 
-Applies top-k magnitude sparsification to gradients: only the largest
-``keep_ratio`` fraction of gradient entries (by absolute value) are
-retained; the rest are zeroed out.
-
-This is a common communication-efficient aggregation technique in
-federated learning that also provides a privacy benefit by discarding
-low-magnitude gradient components.
-
-Usage::
-
-    from defense.strategies.gradient_pruning import GradientPruning
-
-    defense = GradientPruning(keep_ratio=0.1)
-    defended = defense.apply(gradients)  # 90% of entries zeroed
+Applies top-k magnitude sparsification to gradients.
 """
 
 from typing import Any, Dict
@@ -62,7 +49,6 @@ class GradientPruning(GradientDefense):
         k = max(1, int(flat.shape[-1] * self.keep_ratio))
 
         abs_vals = flat.abs()
-        # Per-vector threshold: k-th largest value
         threshold = abs_vals.topk(k, dim=-1).values[:, -1:]
 
         mask = abs_vals >= threshold

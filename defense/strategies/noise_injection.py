@@ -1,23 +1,8 @@
 """
 Gaussian Noise Injection Defense.
 
-Adds isotropic Gaussian noise to gradients before sharing, reducing the
-signal-to-noise ratio available to a gradient inversion attacker.
-
-Supports both *absolute* noise (fixed standard deviation ``sigma``) and
-*relative* noise (scaled to each gradient vector's L2 norm).
-
-Usage::
-
-    from defense.strategies.noise_injection import NoiseInjection
-
-    # Fixed noise
-    defense = NoiseInjection(sigma=0.01)
-
-    # Norm-relative noise
-    defense = NoiseInjection(sigma=0.01, relative=True)
-
-    defended = defense.apply(gradients)
+Adds isotropic Gaussian noise to gradients before sharing.
+Supports both absolute and relative noise.
 """
 
 from typing import Any, Dict
@@ -63,7 +48,6 @@ class NoiseInjection(GradientDefense):
         noise = torch.randn_like(gradients)
 
         if self.relative:
-            # Scale noise by per-vector L2 norm
             original_shape = gradients.shape
             flat = gradients.reshape(-1, original_shape[-1])
             norms = flat.norm(dim=-1, keepdim=True).clamp(min=1e-8)

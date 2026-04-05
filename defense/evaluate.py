@@ -2,14 +2,8 @@
 Defense Evaluation Script.
 
 Evaluates the impact of gradient defense mechanisms on reconstruction
-quality.  Loads a trained attacker model, applies each configured defense
+quality. Loads a trained attacker model, applies each configured defense
 to the test gradients, and reports per-defense metrics.
-
-Usage::
-
-    uv run -m defense.evaluate defense/config/eval_defenses.yaml
-
-Produces a JSON results file and a comparison bar chart for each metric.
 """
 
 import csv
@@ -87,7 +81,6 @@ def evaluate_with_defense(
         images = images[:1]
         actions = actions[:1]
 
-        # Apply defense
         if defense is not None:
             gradients = defense.apply(gradients)
 
@@ -103,8 +96,8 @@ def evaluate_with_defense(
         evaluated += 1
 
         if collect_first_sequence and seq_idx == 0:
-            first_gt = images[0].cpu()  # (T, 3, H, W)
-            first_pred = pred_images[0].cpu()  # (T, 3, H, W)
+            first_gt = images[0].cpu()
+            first_pred = pred_images[0].cpu()
 
     results = metrics.compute()
     results["defense"] = defense_name
@@ -161,13 +154,11 @@ def _save_reconstruction_grid(
     if not rows_with_images:
         return
 
-    # Pick one representative per defense category for the grid:
-    # baseline, middle pruning, middle noise, middle dpsgd
     grid_rows = _pick_representative_rows(rows_with_images)
 
-    gt_images = grid_rows[0]["gt_images"]  # (T, 3, H, W)
+    gt_images = grid_rows[0]["gt_images"]
     T = gt_images.shape[0]
-    num_rows = 1 + len(grid_rows)  # GT + selected defenses
+    num_rows = 1 + len(grid_rows)
 
     row_labels = ["Ground\nTruth"] + [
         _short_defense_label(r.get("defense", "?")) for r in grid_rows
@@ -183,21 +174,18 @@ def _save_reconstruction_grid(
     if T == 1:
         axes = axes[:, None]
 
-    # Row 0: Ground truth
     for t in range(T):
         ax = axes[0, t]
         ax.imshow(gt_images[t].permute(1, 2, 0).numpy().clip(0, 1))
         ax.axis("off")
 
-    # Remaining rows: each selected defense
     for row_idx, r in enumerate(grid_rows, start=1):
-        pred = r["pred_images"]  # (T, 3, H, W)
+        pred = r["pred_images"]
         for t in range(T):
             ax = axes[row_idx, t]
             ax.imshow(pred[t].permute(1, 2, 0).numpy().clip(0, 1))
             ax.axis("off")
 
-    # Rotated row labels against the first image column
     for row_idx, label in enumerate(row_labels):
         ax0 = axes[row_idx, 0]
         pos = ax0.get_position()
@@ -213,7 +201,6 @@ def _save_reconstruction_grid(
             rotation=90,
         )
 
-    # Column titles
     for t in range(T):
         col_pos = axes[0, t].get_position()
         x = (col_pos.x0 + col_pos.x1) / 2
@@ -263,7 +250,6 @@ def _pick_representative_rows(
         if entries:
             selected.append(entries[len(entries) // 2])
 
-    # Include any other categories not covered above
     for cat, entries in buckets.items():
         if cat not in ("baseline", "pruning", "noise", "dpsgd"):
             selected.append(entries[len(entries) // 2])
@@ -285,9 +271,12 @@ def _short_defense_label(name: str) -> str:
     if name.startswith("noise_rel_sigma"):
         sigma = name.split("sigma")[-1]
         return f"Noise rel\n($\\sigma$={sigma})"
+    if name.startswith("dpsgd_eps"):
+        parts = name.replace("dpsgd_eps", "").split("_sigma")
+        return f"DP-SGD\n($\\epsilon$={parts[0]}, $\\sigma$={parts[1]})"
     if name.startswith("dpsgd_C"):
         parts = name.replace("dpsgd_C", "").split("_sigma")
-        return f"DP-SGD\n($C$={parts[0]},$\\sigma$={parts[1]})"
+        return f"DP-SGD\n($C$={parts[0]}, $\\sigma$={parts[1]})"
     return name.replace("_", "\n")
 
 
@@ -354,7 +343,6 @@ def run_defense_evaluation(cfg):
     Args:
         cfg: Full configuration (data, model, eval, defenses, output).
     """
-    # --- Device ---
     device_str = cfg.get("device", "auto")
     if device_str == "auto":
         if torch.cuda.is_available():
@@ -367,7 +355,6 @@ def run_defense_evaluation(cfg):
         device = torch.device(device_str)
     print(f"Using device: {device}")
 
-    # --- Data ---
     data_cfg = cfg.get("data", {})
     model_cfg = cfg.get("model", {})
     eval_cfg = cfg.get("eval", {})
@@ -403,7 +390,6 @@ def run_defense_evaluation(cfg):
     print(f"  Sequences: {len(dataset)}")
     print(f"  Gradient dim: {actual_gradient_dim}")
 
-    # --- Model ---
     checkpoint_path = eval_cfg.get("checkpoint")
     print(f"\nLoading model from: {checkpoint_path}")
     model_type = model_cfg.get("model_type", "temporal")
@@ -421,7 +407,6 @@ def run_defense_evaluation(cfg):
         model_type=model_type,
     )
 
-    # --- Defenses ---
     defenses = build_defense_configs(cfg)
     num_sequences = eval_cfg.get("num_sequences", 20)
     enable_fid = eval_cfg.get("enable_fid", False)
@@ -429,7 +414,6 @@ def run_defense_evaluation(cfg):
     save_dir = Path(output_cfg.get("save_dir", "eval_results/defense"))
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- Run ---
     all_results: List[Dict[str, float]] = []
 
     for defense in defenses:
@@ -439,7 +423,10 @@ def run_defense_evaluation(cfg):
         if defense is not None:
             print(f"  Config: {defense.summary()}")
             if isinstance(defense, DPSGDDefense) and defense.epsilon is not None:
-                print(f"  Privacy budget: (ε={defense.epsilon:.4f}, δ={defense.delta:.1e})")
+                print(
+                    f"  Privacy budget: (ε={defense.epsilon:.4f}, δ={defense.delta:.1e})"
+                    f" | σ={defense.noise_multiplier:.6g}"
+                )
         print(f"{'=' * 60}")
 
         results = evaluate_with_defense(
@@ -454,7 +441,6 @@ def run_defense_evaluation(cfg):
             model_type=model_type,
         )
 
-        # Attach privacy budget to results for DP-SGD defenses
         if isinstance(defense, DPSGDDefense) and defense.epsilon is not None:
             results["epsilon"] = defense.epsilon
             results["delta"] = defense.delta
@@ -462,7 +448,6 @@ def run_defense_evaluation(cfg):
         _print_results(results)
         all_results.append(results)
 
-    # --- Save ---
     results_path = save_dir / "defense_results.json"
     skip_keys = {"gt_images", "pred_images"}
     _safe = []
@@ -480,7 +465,6 @@ def run_defense_evaluation(cfg):
     _save_comparison_chart(all_results, save_dir)
     _save_reconstruction_grid(all_results, save_dir)
 
-    # --- Summary table ---
     _save_summary_csv(all_results, save_dir)
 
 

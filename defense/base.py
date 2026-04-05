@@ -56,8 +56,6 @@ def get_defense(defense_type: str, **kwargs) -> GradientDefense:
     Raises:
         ValueError: If *defense_type* is unknown.
     """
-    # Lazy imports to avoid circular dependency: subclass modules
-    # import GradientDefense from this module at their top level.
     from defense.strategies.dp_sgd import DPSGDDefense
     from defense.strategies.gradient_pruning import GradientPruning
     from defense.strategies.noise_injection import NoiseInjection

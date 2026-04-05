@@ -7,10 +7,11 @@
 device: auto
 
 data:
-  h5_path: trajectory_data/small/gradients_test_augmented.h5
+  h5_path: trajectory_data/ppo/gradients_test.h5
   gradient_dim: 936102
 
 model:
+  model_type: autoregressive
   sequence_length: 8
   latent_dim: 1024
   stride: 8 # Non-overlapping for evaluation
@@ -22,18 +23,13 @@ model:
   dropout: 0.1
 
 eval:
-  checkpoint: ckpts/small/attacker_1024_aug_finetuned_10/best_model.pt
-  num_sequences: 20
-  enable_fid: false # Set true for full evaluation (slower)
+  checkpoint: ckpts/autoregressive/base/best_model.pt
+  num_sequences: 100
+  enable_fid: false
 
 output:
-  save_dir: ckpts/small/attacker_1024_aug_finetuned_10/eval_results/defense
+  save_dir: ckpts/autoregressive/defense/base/eval_results
 
-# ---------------------------------------------------------------------------
-# Defense configurations
-# Each entry specifies a defense type and its parameters.
-# The evaluation always includes an undefended baseline automatically.
-# ---------------------------------------------------------------------------
 defenses:
   # --- Gradient Pruning (top-k sparsification) ---
   - type: pruning
@@ -55,19 +51,24 @@ defenses:
   - type: noise
     sigma: 0.1
 
-  # --- DP-SGD (clipping + calibrated noise) ---
-  - type: dpsgd
+  # DP-SGD
+  - type: dpsgd # Low privacy
     max_grad_norm: 1.0
-    noise_multiplier: 0.01
+    target_epsilon: 10.0
+    target_delta: 1.0e-5
+    num_steps: 1000
+    sample_rate: 0.01
 
-  - type: dpsgd
+  - type: dpsgd # Medium privacy
     max_grad_norm: 1.0
-    noise_multiplier: 0.1
+    target_epsilon: 5.0
+    target_delta: 1.0e-5
+    num_steps: 1000
+    sample_rate: 0.01
 
-  - type: dpsgd
+  - type: dpsgd # Strong privacy
     max_grad_norm: 1.0
-    noise_multiplier: 1.0
-
-  - type: dpsgd
-    max_grad_norm: 0.1
-    noise_multiplier: 0.1
+    target_epsilon: 1.0
+    target_delta: 1.0e-5
+    num_steps: 1000
+    sample_rate: 0.01
