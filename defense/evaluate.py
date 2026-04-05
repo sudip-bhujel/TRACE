@@ -35,6 +35,7 @@ from attacker.evaluation.metrics import (
     print_results,
 )
 from defense.base import GradientDefense, get_defense
+from defense.strategies.dp_sgd import DPSGDDefense
 
 
 def evaluate_with_defense(
@@ -46,6 +47,7 @@ def evaluate_with_defense(
     enable_fid: bool = False,
     num_actions: int = 5,
     collect_first_sequence: bool = False,
+    model_type: str = "temporal",
 ) -> Dict[str, object]:
     """
     Run evaluation with a specific defense applied to gradients.
@@ -90,7 +92,12 @@ def evaluate_with_defense(
             gradients = defense.apply(gradients)
 
         with torch.no_grad():
-            pred_images, pred_actions, _, _ = model(gradients)
+            if model_type == "autoregressive":
+                pred_images, pred_actions, _, _ = model(
+                    gradients, teacher_forcing=False
+                )
+            else:
+                pred_images, pred_actions, _, _ = model(gradients)
 
         metrics.update(pred_images, images, pred_actions, actions)
         evaluated += 1
@@ -399,6 +406,7 @@ def run_defense_evaluation(cfg):
     # --- Model ---
     checkpoint_path = eval_cfg.get("checkpoint")
     print(f"\nLoading model from: {checkpoint_path}")
+    model_type = model_cfg.get("model_type", "temporal")
     model = load_model(
         checkpoint_path,
         gradient_dim=actual_gradient_dim,
@@ -410,6 +418,7 @@ def run_defense_evaluation(cfg):
         encoder_hidden_dims=model_cfg.get("encoder_hidden_dims", None),
         encoder_type=model_cfg.get("encoder_type", "basic"),
         decoder_type=model_cfg.get("decoder_type", "basic"),
+        model_type=model_type,
     )
 
     # --- Defenses ---
@@ -429,6 +438,8 @@ def run_defense_evaluation(cfg):
         print(f"Evaluating defense: {tag}")
         if defense is not None:
             print(f"  Config: {defense.summary()}")
+            if isinstance(defense, DPSGDDefense) and defense.epsilon is not None:
+                print(f"  Privacy budget: (ε={defense.epsilon:.4f}, δ={defense.delta:.1e})")
         print(f"{'=' * 60}")
 
         results = evaluate_with_defense(
@@ -440,7 +451,13 @@ def run_defense_evaluation(cfg):
             enable_fid=enable_fid,
             num_actions=num_actions,
             collect_first_sequence=True,
+            model_type=model_type,
         )
+
+        # Attach privacy budget to results for DP-SGD defenses
+        if isinstance(defense, DPSGDDefense) and defense.epsilon is not None:
+            results["epsilon"] = defense.epsilon
+            results["delta"] = defense.delta
 
         _print_results(results)
         all_results.append(results)
@@ -474,7 +491,7 @@ def _print_results(results: Dict[str, float]):
 
 def _save_summary_csv(all_results: List[Dict[str, float]], save_dir: Path):
     """Save a compact comparison table as CSV."""
-    columns = ["defense"] + METRIC_KEYS
+    columns = ["defense"] + METRIC_KEYS + ["epsilon", "delta"]
     csv_path = save_dir / "defense_summary.csv"
 
     with open(csv_path, "w", newline="") as f:

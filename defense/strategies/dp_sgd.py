@@ -45,12 +45,18 @@ class DPSGDDefense(GradientDefense):
         max_grad_norm: Clipping bound *C* for the L2 norm.
         noise_multiplier: Ratio of noise standard deviation to clipping
             bound.  The actual noise std is ``noise_multiplier * max_grad_norm``.
+        num_steps: Number of gradient update steps (for privacy accounting).
+        sample_rate: Subsampling probability per step (batch_size / dataset_size).
+        delta: Target delta for (epsilon, delta)-DP.
     """
 
     def __init__(
         self,
         max_grad_norm: float = 1.0,
         noise_multiplier: float = 0.1,
+        num_steps: Optional[int] = None,
+        sample_rate: Optional[float] = None,
+        delta: float = 1e-5,
     ):
         if max_grad_norm <= 0.0:
             raise ValueError(f"max_grad_norm must be > 0, got {max_grad_norm}")
@@ -59,6 +65,19 @@ class DPSGDDefense(GradientDefense):
         super().__init__(name=f"dpsgd_C{max_grad_norm}_sigma{noise_multiplier}")
         self.max_grad_norm = max_grad_norm
         self.noise_multiplier = noise_multiplier
+        self.delta = delta
+        self._num_steps = num_steps
+        self._sample_rate = sample_rate
+
+        # Eagerly compute epsilon when accounting params are provided
+        if num_steps is not None and sample_rate is not None:
+            self.epsilon = self.compute_epsilon(
+                num_steps=num_steps,
+                sample_rate=sample_rate,
+                delta=delta,
+            )
+        else:
+            self.epsilon = None
 
     def _clip(self, gradients: torch.Tensor) -> torch.Tensor:
         """
@@ -159,10 +178,21 @@ class DPSGDDefense(GradientDefense):
 
         return best_eps
 
+    @property
+    def privacy_budget(self) -> Optional[Dict[str, float]]:
+        """Return (epsilon, delta) dict if privacy accounting is available."""
+        if self.epsilon is not None:
+            return {"epsilon": self.epsilon, "delta": self.delta}
+        return None
+
     def summary(self) -> Dict[str, Any]:
-        return {
+        info = {
             **super().summary(),
             "max_grad_norm": self.max_grad_norm,
             "noise_multiplier": self.noise_multiplier,
             "noise_std": self.noise_multiplier * self.max_grad_norm,
         }
+        if self.epsilon is not None:
+            info["epsilon"] = self.epsilon
+            info["delta"] = self.delta
+        return info
