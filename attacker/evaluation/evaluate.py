@@ -58,11 +58,6 @@ def load_model(
 ) -> nn.Module:
     """Load trained temporal model from checkpoint."""
     # Build decoder kwargs for pretrained decoder
-    decoder_kwargs = {}
-    if decoder_type == "pretrained":
-        decoder_kwargs["vae_model"] = kwargs.get(
-            "vae_model", "stabilityai/sd-vae-ft-mse"
-        )
 
     if model_type == "autoregressive":
         model = AutoregressiveGradientInversion(
@@ -81,7 +76,6 @@ def load_model(
             temporal_model_type=temporal_model_type,
             ff_multiplier=ff_multiplier,
             use_rope=use_rope,
-            **decoder_kwargs,
         ).to(device)
     else:
         model = TemporalGradientInversion(
@@ -101,7 +95,6 @@ def load_model(
             temporal_model_type=temporal_model_type,
             ff_multiplier=ff_multiplier,
             use_rope=use_rope,
-            **decoder_kwargs,
         ).to(device)
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -127,7 +120,8 @@ def load_model(
 
 
 def _save_confusion_matrix(cm: np.ndarray, save_path: Path, action_names: List[str]):
-    """Save action prediction confusion matrix as a heatmap."""
+    """Save action prediction confusion matrix as a heatmap (PNG + PDF)."""
+    plt.rcParams["font.family"] = "serif"
     fig, ax = plt.subplots(figsize=(8, 6))
     sns.heatmap(
         cm,
@@ -142,7 +136,9 @@ def _save_confusion_matrix(cm: np.ndarray, save_path: Path, action_names: List[s
     ax.set_ylabel("True")
     ax.set_title("Action Prediction Confusion Matrix")
     plt.tight_layout()
-    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    stem = save_path.with_suffix("")
+    plt.savefig(stem.with_suffix(".png"), dpi=150, bbox_inches="tight")
+    plt.savefig(stem.with_suffix(".pdf"), bbox_inches="tight")
     plt.close()
 
 
@@ -152,7 +148,6 @@ def evaluate_and_save_reconstructions(
     device: torch.device,
     save_dir: Path,
     num_sequences: int = 5,
-    enhancer: nn.Module = None,
     enable_fid: bool = True,
     num_actions: int = 5,
     model_type: str = "temporal",
@@ -167,6 +162,7 @@ def evaluate_and_save_reconstructions(
     Returns:
         Dict of aggregate metric values.
     """
+    plt.rcParams["font.family"] = "serif"
     model.eval()
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -200,11 +196,6 @@ def evaluate_and_save_reconstructions(
                 )
             else:
                 pred_images, pred_actions, _, _ = model(gradients)
-            if enhancer is not None:
-                B, T, C, H, W = pred_images.shape
-                flat = pred_images.reshape(B * T, C, H, W).clamp(0, 1)
-                flat = enhancer(flat)
-                pred_images = flat.reshape(B, T, C, H, W)
 
         # Accumulate metrics (pred_images still on device)
         metrics.update(pred_images, images, pred_actions, actions)
@@ -235,18 +226,18 @@ def evaluate_and_save_reconstructions(
             axes[1, t].axis("off")
 
         plt.suptitle(
-            f"Seq {seq_idx + 1} | MSE: {mse:.4f} | PSNR: {psnr:.1f} dB"
-            f" | Acc: {100 * correct / total:.1f}%"
+            f"MSE: {mse:.4f} | PSNR: {psnr:.1f} dB | Action Accuracy: {100 * correct / total:.1f}%"
         )
         plt.tight_layout()
 
-        save_path = save_dir / f"reconstruction_seq_{seq_idx + 1:03d}.png"
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        stem = save_dir / f"reconstruction_seq_{seq_idx + 1:03d}"
+        plt.savefig(stem.with_suffix(".png"), dpi=150, bbox_inches="tight")
+        plt.savefig(stem.with_suffix(".pdf"), bbox_inches="tight")
         plt.close()
 
         print(
-            f"Saved {save_path.name} | MSE: {mse:.4f} | PSNR: {psnr:.1f} dB"
-            f" | Acc: {100 * correct / total:.1f}%"
+            f"Saved {stem.name} (.png/.pdf) | MSE: {mse:.4f} | PSNR: {psnr:.1f} dB"
+            f" | Action Accuracy: {100 * correct / total:.1f}%"
         )
 
     # --- Aggregate metrics ---
@@ -279,7 +270,7 @@ def evaluate_and_save_reconstructions(
         cm = metrics.confusion_matrix(num_actions=num_actions)
         cm_path = save_dir / "confusion_matrix.png"
         _save_confusion_matrix(cm, cm_path, action_labels)
-        print(f"  Confusion matrix saved to: {cm_path}")
+        print(f"  Confusion matrix saved to: {cm_path} / {cm_path.with_suffix('.pdf').name}")
 
     print(f"  Figures saved to: {save_dir}")
     print(f"{'=' * 60}")
@@ -380,22 +371,6 @@ def evaluate(
         **kwargs,
     )
 
-    # Load enhancer if provided
-    enhancer = None
-    enhancer_checkpoint = kwargs.get("enhancer_checkpoint", "")
-    if enhancer_checkpoint:
-        from attacker.models.enhancer import EnhancerUNet
-
-        print(f"\nLoading enhancer from: {enhancer_checkpoint}")
-        enh_ckpt = torch.load(
-            enhancer_checkpoint, map_location=device, weights_only=False
-        )
-        base_channels = enh_ckpt.get("base_channels", 64)
-        enhancer = EnhancerUNet(in_channels=3, base_channels=base_channels).to(device)
-        enhancer.load_state_dict(enh_ckpt["model_state_dict"])
-        enhancer.eval()
-        print(f"  Enhancer loaded (base_channels={base_channels})")
-
     # Run evaluation
     print(f"\nGenerating reconstructions for {num_sequences} sequences...")
     evaluate_and_save_reconstructions(
@@ -404,7 +379,6 @@ def evaluate(
         device=device,
         save_dir=Path(save_dir),
         num_sequences=num_sequences,
-        enhancer=enhancer,
         enable_fid=enable_fid,
         num_actions=num_actions,
         model_type=model_type,
@@ -453,7 +427,5 @@ if __name__ == "__main__":
         temporal_model_type=model_cfg.get("temporal_model_type", "transformer"),
         ff_multiplier=model_cfg.get("ff_multiplier", 4),
         use_rope=model_cfg.get("use_rope", False),
-        model_type=model_cfg.get("model_type", "temporal"),
-        vae_model=model_cfg.get("vae_model", "stabilityai/sd-vae-ft-mse"),
-        enhancer_checkpoint=eval_cfg.get("enhancer_checkpoint", ""),
+        model_type=model_cfg.get("model_type", "autoregressive"),
     )

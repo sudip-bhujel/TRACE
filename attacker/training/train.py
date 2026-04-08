@@ -236,6 +236,7 @@ def save_temporal_reconstructions(
     model_type: str = "temporal",
 ):
     """Save sample reconstructions showing temporal progression."""
+    plt.rcParams["font.family"] = "serif"
     model.eval()
 
     gradients, images, actions = next(iter(dataloader))

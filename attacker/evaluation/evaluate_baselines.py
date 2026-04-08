@@ -1,10 +1,11 @@
 """
 Baseline Evaluation Script for Gradient Inversion
 
-Evaluates three baseline methods against the temporal gradient inversion model:
+Evaluates baseline methods and the full autoregressive model:
   1. DLG (Zhu et al., 2019) — optimization-based, L2 gradient matching
   2. IG  (Geiping et al., 2020) — cosine similarity + TV regularization
   3. SingleFrame — learned encoder+decoder without temporal transformer
+  4. Base (Ours) — full autoregressive gradient inversion model
 
 All methods are evaluated on the same test data with the same metrics
 (MSE, PSNR, SSIM, LPIPS, FID, action accuracy).
@@ -33,13 +34,9 @@ from attacker.baselines.ig import IGBaseline
 from attacker.baselines.single_frame import SingleFrameInversion
 from attacker.data.dataset import TemporalGradientDataset
 from attacker.evaluation.metrics import MetricsComputer
+from attacker.models.autoregressive_model import AutoregressiveGradientInversion
 
 ACTION_NAMES = ["MoveAhead", "RotateLeft", "RotateRight", "LookDown", "LookUp"]
-
-
-# ============================================================================
-# Model loading helpers
-# ============================================================================
 
 
 def load_victim_model(
@@ -81,18 +78,68 @@ def load_single_frame_model(
     ).to(device)
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    if "model_state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["model_state_dict"])
-        print(f"  Loaded SingleFrame from epoch {checkpoint.get('epoch', '?')}")
-    else:
-        model.load_state_dict(checkpoint)
+    state_dict = (
+        checkpoint["model_state_dict"]
+        if "model_state_dict" in checkpoint
+        else checkpoint
+    )
+
+    # The checkpoint may come from the full autoregressive model, which has
+    # extra modules (start_token, image_encoder, type_embedding, temporal_model).
+    # Filter to only keys present in the SingleFrameInversion model.
+    model_keys = set(model.state_dict().keys())
+    filtered = {k: v for k, v in state_dict.items() if k in model_keys}
+    skipped = set(state_dict.keys()) - model_keys
+    if skipped:
+        print(
+            f"  Skipping {len(skipped)} keys not in SingleFrameInversion "
+            f"(e.g. {sorted(skipped)[:3]})"
+        )
+
+    model.load_state_dict(filtered, strict=True)
+    print(
+        f"  Loaded SingleFrame from epoch {checkpoint.get('epoch', '?')} "
+        f"({len(filtered)}/{len(state_dict)} keys)"
+    )
     model.eval()
     return model
 
 
-# ============================================================================
-# Evaluation for optimization-based baselines (DLG, IG)
-# ============================================================================
+def load_base_model(
+    checkpoint_path: str,
+    gradient_dim: int,
+    device: torch.device,
+    num_actions: int = 5,
+    latent_dim: int = 1024,
+    encoder_type: str = "residual",
+    decoder_type: str = "residual",
+    num_transformer_layers: int = 6,
+    num_heads: int = 8,
+) -> nn.Module:
+    """Load a trained AutoregressiveGradientInversion model."""
+    model = AutoregressiveGradientInversion(
+        gradient_dim=gradient_dim,
+        latent_dim=latent_dim,
+        num_actions=num_actions,
+        num_transformer_layers=num_transformer_layers,
+        num_heads=num_heads,
+        encoder_type=encoder_type,
+        decoder_type=decoder_type,
+    ).to(device)
+
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    state_dict = (
+        checkpoint["model_state_dict"]
+        if "model_state_dict" in checkpoint
+        else checkpoint
+    )
+    model.load_state_dict(state_dict)
+    print(
+        f"  Loaded base model from epoch {checkpoint.get('epoch', '?')} "
+        f"({len(state_dict)} keys)"
+    )
+    model.eval()
+    return model
 
 
 def evaluate_optimization_baseline(
@@ -186,11 +233,6 @@ def evaluate_optimization_baseline(
     return results
 
 
-# ============================================================================
-# Evaluation for learned single-frame baseline
-# ============================================================================
-
-
 def evaluate_learned_baseline(
     model: nn.Module,
     dataloader: DataLoader,
@@ -281,9 +323,98 @@ def evaluate_learned_baseline(
     return results
 
 
-# ============================================================================
-# CSV output
-# ============================================================================
+def evaluate_base_model(
+    model: nn.Module,
+    dataloader: DataLoader,
+    device: torch.device,
+    save_dir: Path,
+    num_sequences: int = 5,
+    num_actions: int = 5,
+    enable_fid: bool = True,
+    use_flash_attention: bool = True,
+):
+    """Evaluate the full AutoregressiveGradientInversion model."""
+    model.eval()
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    metrics = MetricsComputer(device, compute_fid_flag=enable_fid)
+
+    data_iter = iter(dataloader)
+    evaluated = 0
+
+    total_time = 0.0
+    num_images = 0
+
+    for seq_idx in range(num_sequences):
+        try:
+            gradients, images, actions = next(data_iter)
+        except StopIteration:
+            print(f"  Only {seq_idx} sequences available")
+            break
+
+        gradients = gradients[:1].to(device)
+        images = images[:1]
+        actions = actions[:1]
+
+        seq_start = time.perf_counter()
+        with torch.no_grad():
+            pred_images, pred_actions, _, _ = model(
+                gradients,
+                teacher_forcing=False,
+                use_flash_attention=use_flash_attention,
+            )
+        seq_elapsed = time.perf_counter() - seq_start
+        total_time += seq_elapsed
+
+        B, T = images.shape[:2]
+        num_images += B * T
+
+        metrics.update(pred_images, images, pred_actions, actions)
+
+        pred_images_cpu = pred_images.cpu()
+        pred_labels = pred_actions.argmax(dim=-1).cpu()
+
+        mse = ((pred_images_cpu - images) ** 2).mean().item()
+        psnr = -10.0 * math.log10(max(mse, 1e-10))
+        correct = (pred_labels == actions).sum().item()
+        total = actions.numel()
+        evaluated += 1
+
+        T = images.shape[1]
+        fig, axes = plt.subplots(2, T, figsize=(2 * T, 4))
+        if T == 1:
+            axes = axes.reshape(2, 1)
+        for t in range(T):
+            axes[0, t].imshow(images[0, t].permute(1, 2, 0).numpy())
+            axes[0, t].set_title(f"t={t} GT (a={actions[0, t].item()})", fontsize=8)
+            axes[0, t].axis("off")
+            pred_img = pred_images_cpu[0, t].permute(1, 2, 0).numpy().clip(0, 1)
+            axes[1, t].imshow(pred_img)
+            axes[1, t].set_title(
+                f"t={t} Pred (a={pred_labels[0, t].item()})", fontsize=8
+            )
+            axes[1, t].axis("off")
+
+        plt.tight_layout()
+        stem = save_dir / f"base_seq_{seq_idx + 1:03d}"
+        plt.savefig(f"{stem}.png", dpi=150, bbox_inches="tight")
+        plt.savefig(f"{stem}.pdf", bbox_inches="tight")
+        plt.close()
+
+        print(
+            f"  [Base] Seq {seq_idx + 1} | MSE: {mse:.4f}"
+            f" | PSNR: {psnr:.1f} dB | Acc: {100 * correct / total:.1f}%"
+        )
+
+    results = metrics.compute()
+    results["inference_time_per_image_sec"] = (
+        total_time / num_images if num_images > 0 else 0.0
+    )
+    results["inference_time_total_sec"] = total_time
+    results["inference_time_num_images"] = num_images
+    metrics.save(save_dir / "base_metrics.json")
+    return results
+
 
 METRIC_COLUMNS = [
     "mse",
@@ -345,16 +476,12 @@ def save_comparison_csv(all_results: Dict[str, dict], path: Path):
     print(f"Comparison CSV saved to: {path}")
 
 
-# ============================================================================
-# Main
-# ============================================================================
-
-
 def evaluate_baselines(
     h5_path: str,
     victim_checkpoint: str,
     save_dir: str = "eval_results/baselines",
     singleframe_checkpoint: str = "",
+    base_checkpoint: str = "",
     num_sequences: int = 5,
     sequence_length: int = 8,
     stride: int = 8,
@@ -372,13 +499,21 @@ def evaluate_baselines(
     ig_restarts: int = 1,
     ig_signed: bool = False,
     # SingleFrame architecture (must match its training config)
-    latent_dim: int = 512,
-    encoder_type: str = "residual",
-    decoder_type: str = "residual",
-    # Which baselines to run
+    sf_latent_dim: int = 1024,
+    sf_encoder_type: str = "residual",
+    sf_decoder_type: str = "residual",
+    # Base model architecture
+    base_latent_dim: int = 1024,
+    base_encoder_type: str = "residual",
+    base_decoder_type: str = "residual",
+    base_num_transformer_layers: int = 6,
+    base_num_heads: int = 8,
+    use_flash_attention: bool = True,
+    # Which methods to run
     run_dlg: bool = True,
     run_ig: bool = True,
     run_singleframe: bool = True,
+    run_base: bool = False,
     enable_fid: bool = False,
 ):
     """Run evaluation for all enabled baselines."""
@@ -492,9 +627,9 @@ def evaluate_baselines(
             gradient_dim=actual_gradient_dim,
             device=device,
             num_actions=num_actions,
-            latent_dim=latent_dim,
-            encoder_type=encoder_type,
-            decoder_type=decoder_type,
+            latent_dim=sf_latent_dim,
+            encoder_type=sf_encoder_type,
+            decoder_type=sf_decoder_type,
         )
 
         sf_results = evaluate_learned_baseline(
@@ -514,6 +649,45 @@ def evaluate_baselines(
         torch.cuda.empty_cache() if device.type == "cuda" else None
     elif run_singleframe:
         print("\nSkipping SingleFrame: no checkpoint provided")
+
+    # ------------------------------------------------------------------
+    # 4. Base (Autoregressive) Model — Ours
+    # ------------------------------------------------------------------
+    if run_base and base_checkpoint:
+        print(f"\n{'=' * 60}")
+        print("Evaluating Base autoregressive model (Ours) ...")
+        print(f"{'=' * 60}")
+
+        base_model = load_base_model(
+            base_checkpoint,
+            gradient_dim=actual_gradient_dim,
+            device=device,
+            num_actions=num_actions,
+            latent_dim=base_latent_dim,
+            encoder_type=base_encoder_type,
+            decoder_type=base_decoder_type,
+            num_transformer_layers=base_num_transformer_layers,
+            num_heads=base_num_heads,
+        )
+
+        base_results = evaluate_base_model(
+            base_model,
+            dataloader,
+            device,
+            save_dir / "base",
+            num_sequences=num_sequences,
+            num_actions=num_actions,
+            enable_fid=enable_fid,
+            use_flash_attention=use_flash_attention,
+        )
+        all_results["Base (Ours)"] = base_results
+        save_method_csv(
+            "Base", base_results, save_dir / "base" / "results.csv"
+        )
+        del base_model
+        torch.cuda.empty_cache() if device.type == "cuda" else None
+    elif run_base:
+        print("\nSkipping Base model: no checkpoint provided")
 
     # ------------------------------------------------------------------
     # Combined comparison CSV
@@ -544,6 +718,7 @@ if __name__ == "__main__":
     dlg_cfg = cfg.get("dlg", {})
     ig_cfg = cfg.get("ig", {})
     sf_cfg = cfg.get("singleframe", {})
+    base_cfg = cfg.get("base", {})
 
     gradient_layers = data_cfg.get("gradient_layers", None)
     if gradient_layers is not None:
@@ -554,6 +729,7 @@ if __name__ == "__main__":
         victim_checkpoint=eval_cfg.get("victim_checkpoint"),
         save_dir=output_cfg.get("save_dir", "eval_results/baselines"),
         singleframe_checkpoint=sf_cfg.get("checkpoint", ""),
+        base_checkpoint=base_cfg.get("checkpoint", ""),
         num_sequences=eval_cfg.get("num_sequences", 5),
         sequence_length=model_cfg.get("sequence_length", 8),
         stride=model_cfg.get("stride", 8),
@@ -571,12 +747,20 @@ if __name__ == "__main__":
         ig_restarts=ig_cfg.get("num_restarts", 1),
         ig_signed=ig_cfg.get("signed", False),
         # SingleFrame architecture
-        latent_dim=model_cfg.get("latent_dim", 512),
-        encoder_type=model_cfg.get("encoder_type", "residual"),
-        decoder_type=model_cfg.get("decoder_type", "residual"),
+        sf_latent_dim=sf_cfg.get("latent_dim", 1024),
+        sf_encoder_type=sf_cfg.get("encoder_type", "residual"),
+        sf_decoder_type=sf_cfg.get("decoder_type", "residual"),
+        # Base model architecture
+        base_latent_dim=base_cfg.get("latent_dim", 1024),
+        base_encoder_type=base_cfg.get("encoder_type", "residual"),
+        base_decoder_type=base_cfg.get("decoder_type", "residual"),
+        base_num_transformer_layers=base_cfg.get("num_transformer_layers", 6),
+        base_num_heads=base_cfg.get("num_heads", 8),
+        use_flash_attention=model_cfg.get("use_flash_attention", True),
         # Flags
         run_dlg=eval_cfg.get("run_dlg", True),
         run_ig=eval_cfg.get("run_ig", True),
         run_singleframe=eval_cfg.get("run_singleframe", True),
+        run_base=eval_cfg.get("run_base", False),
         enable_fid=eval_cfg.get("enable_fid", False),
     )
