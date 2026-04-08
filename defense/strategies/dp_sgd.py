@@ -92,7 +92,7 @@ class DPSGDDefense(GradientDefense):
             raise ValueError(f"noise_multiplier must be >= 0, got {noise_multiplier}")
 
         if self.epsilon is not None:
-            name_str = f"dpsgd_eps{self.epsilon}_sigma{noise_multiplier:.6g}"
+            name_str = f"dpsgd_eps{self.epsilon}_delta{self.delta:.1e}"
         else:
             name_str = f"dpsgd_C{max_grad_norm}_sigma{noise_multiplier:.6g}"
 

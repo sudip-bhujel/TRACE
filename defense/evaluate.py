@@ -272,8 +272,16 @@ def _short_defense_label(name: str) -> str:
         sigma = name.split("sigma")[-1]
         return f"Noise rel\n($\\sigma$={sigma})"
     if name.startswith("dpsgd_eps"):
-        parts = name.replace("dpsgd_eps", "").split("_sigma")
-        return f"DP-SGD\n($\\epsilon$={parts[0]}, $\\sigma$={parts[1]})"
+        parts = name.replace("dpsgd_eps", "").split("_delta")
+        eps = parts[0]
+        # Convert e.g. "1.0e-05" → "$10^{-5}$"
+        delta_str = parts[1]
+        try:
+            exp = int(float(delta_str.split("e")[1]))
+            delta_fmt = f"$10^{{{exp}}}$"
+        except (IndexError, ValueError):
+            delta_fmt = delta_str
+        return f"DP-SGD\n($\\epsilon$={eps}, $\\delta$={delta_fmt})"
     if name.startswith("dpsgd_C"):
         parts = name.replace("dpsgd_C", "").split("_sigma")
         return f"DP-SGD\n($C$={parts[0]}, $\\sigma$={parts[1]})"
