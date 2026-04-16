@@ -20,8 +20,12 @@ model:
   use_flash_attention: true
 
 eval:
-  checkpoint: ckpts/autoregressive/base/best_model.pt
+  checkpoint: ckpts/autoregressive/no_temp/ablation/t8/best_model.pt
   num_sequences: 100
+  enable_fid: true
+  # false = autoregressive inference (real inference condition)
+  # true  = teacher-forced inference (upper-bound / gap measurement)
+  teacher_forcing: true
 
 output:
-  save_dir: eval_results/autoregressive/base
+  save_dir: eval_results/autoregressive/no_temp/t8-tf-true

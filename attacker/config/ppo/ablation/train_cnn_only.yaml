@@ -1,0 +1,86 @@
+# Ablation: CNN layers only (encoder convolution + BatchNorm gradients)
+# Tests whether CNN feature gradients alone are sufficient for reconstruction.
+# Usage: uv run -m attacker.training.train ./attacker/config/ablation/train_cnn_only.yaml
+
+device: auto
+
+data:
+  h5_path: trajectory_data/ppo/gradients_train_augmented.h5
+  gradient_layers:
+    # Conv1 (3->32, k=8, s=4)
+    - encoder.0.0.weight
+    - encoder.0.0.bias
+    - encoder.0.2.weight
+    - encoder.0.2.bias
+    # Conv2 (32->64, k=4, s=2)
+    - encoder.1.0.weight
+    - encoder.1.0.bias
+    - encoder.1.2.weight
+    - encoder.1.2.bias
+    # Conv3 (64->64, k=3, s=1)
+    - encoder.2.0.weight
+    - encoder.2.0.bias
+    - encoder.2.2.weight
+    - encoder.2.2.bias
+    # Conv4 (64->64, k=3, s=2)
+    - encoder.3.0.weight
+    - encoder.3.0.bias
+    - encoder.3.2.weight
+    - encoder.3.2.bias
+
+model:
+  model_type: autoregressive
+  sequence_length: 8
+  latent_dim: 1024
+  encoder_hidden_dim: 1024
+  stride: 2
+  num_transformer_layers: 6
+  num_heads: 8
+  encoder_type: residual
+  decoder_type: residual
+  use_flash_attention: true
+
+training:
+  num_epochs: 50
+  batch_size: 8
+  accumulation_steps: 2
+  learning_rate: 1e-4
+  weight_decay: 1e-5
+  num_workers: 4
+
+  lr_schedule: cosine
+  warmup_epochs: 5
+  min_lr: 1e-6
+
+  gradient_noise_scale: 0.0
+
+  scheduled_sampling_start: 0.1
+  scheduled_sampling_end: 0.8
+  scheduled_sampling_warmup: 5
+
+  rollout_steps: 3
+  rollout_weight: 0.5
+
+loss:
+  mse_weight: 1.0
+  l1_weight: 0.5
+  action_weight: 0.01
+  temporal_weight: 0.0
+  lpips_weight: 0.2
+  lpips_net: vgg
+
+output:
+  save_dir: ckpts/trace/ppo/ablation/cnn_only
+
+eval:
+  enabled: true
+  h5_path: trajectory_data/ppo/gradients_test.h5
+  num_sequences: 100
+
+wandb:
+  enabled: true
+  project: trace
+  name: ablation-cnn-only
+  group: ppo/ablation
+  entity: gradinversion
+  tags: ["ppo", "ablation", "cnn-only"]

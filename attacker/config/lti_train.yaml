@@ -1,0 +1,37 @@
+# Learning-to-Invert (Wu et al., UAI 2023) Training Configuration
+# Usage: uv run -m attacker.baselines.learning_to_invert attacker/config/lti_train.yaml
+
+device: auto
+
+data:
+  train_h5_path: trajectory_data/ppo/gradients_train.h5
+  test_h5_path: trajectory_data/ppo/gradients_test.h5
+  gradient_dim: 936102
+
+model:
+  hidden_size: 3000
+  compress_rate: 0.1
+  seed: 0
+  image_size: 84
+  image_channels: 3
+  num_actions: 5
+
+training:
+  num_epochs: 200
+  batch_size: 64
+  learning_rate: 0.001
+  action_weight: 0.1
+  lr_decay_epoch_frac: 0.75
+  lr_decay_factor: 0.1
+  num_workers: 4
+
+output:
+  save_dir: ckpts/trace/lti
+
+wandb:
+  enabled: true
+  project: trace
+  name: lti-ppo
+  group: ppo/baseline
+  entity: gradinversion
+  tags: ["lti", "baseline"]

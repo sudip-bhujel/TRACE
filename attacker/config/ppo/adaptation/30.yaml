@@ -1,0 +1,62 @@
+data:
+  h5_path: trajectory_data/ppo/gradients_test_augmented.h5
+  gradient_dim: 936102
+  finetune_fraction: 0.3
+
+model:
+  model_type: autoregressive
+  sequence_length: 8
+  latent_dim: 1024
+  encoder_hidden_dim: 2048
+  stride: 2
+  num_transformer_layers: 6
+  num_heads: 8
+  encoder_type: residual
+  decoder_type: residual
+  use_flash_attention: true
+  # Load pretrained base model weights
+  pretrained_checkpoint: ckpts/trace/ppo/base/best_model.pt
+
+training:
+  num_epochs: 20
+  batch_size: 8
+  accumulation_steps: 4
+  learning_rate: 1e-5 # 10x lower than base training
+  weight_decay: 1e-5
+  num_workers: 4
+  lr_schedule: cosine
+  warmup_epochs: 2
+  min_lr: 1e-7
+
+  gradient_noise_scale: 0.0
+
+  scheduled_sampling_start: 0.0
+  scheduled_sampling_end: 0.5
+  scheduled_sampling_warmup: 2
+
+  rollout_steps: 2
+  rollout_weight: 0.3
+
+loss:
+  mse_weight: 1.0
+  l1_weight: 0.5
+  action_weight: 0.01
+  temporal_weight: 0.0
+  lpips_weight: 0.2
+  lpips_net: vgg
+
+output:
+  save_dir: ckpts/trace/ppo/adaptation/30
+
+eval:
+  enabled: true
+  h5_path: trajectory_data/ppo/gradients_test.h5
+  num_sequences: 100
+
+wandb:
+  enabled: true
+  project: trace
+  name: adaptation_30
+  group: ppo/adaptation
+  entity: gradinversion
+  tags: ["ppo", "adaptation", "30"]

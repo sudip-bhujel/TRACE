@@ -1,0 +1,64 @@
+# Baseline Evaluation Configuration
+# Usage: uv run -m attacker.evaluation.evaluate_baselines attacker/config/eval_baselines.yaml
+
+device: auto
+
+data:
+  h5_path: trajectory_data/a2c/gradients_test.h5
+  gradient_dim: 936102
+
+model:
+  model_type: autoregressive
+  sequence_length: 8
+  stride: 2
+  latent_dim: 1024
+  encoder_hidden_dim: 2048
+  encoder_type: residual
+  decoder_type: residual
+  use_flash_attention: true
+
+eval:
+  victim_checkpoint: ckpts/victim/a2c_ai2thor_100.pt
+  num_sequences: 100
+  run_dlg: true
+  run_ig: true
+  run_lti: true
+  run_singleframe: true
+  run_base: true
+  enable_fid: false
+
+dlg:
+  num_iterations: 300 # matching official mit-han-lab/dlg
+  lr: 1.0
+  num_restarts: 1
+
+ig:
+  num_iterations: 4800 # matching official JonasGeiping/invertinggradients DEFAULT_CONFIG
+  lr: 0.1
+  tv_weight: 1e-1 # matching official default
+  num_restarts: 1
+  signed: false
+
+lti:
+  hidden_size: 3000
+  compress_rate: 0.1
+  seed: 0
+  checkpoint: "ckpts/trace/lti/best_model.pt"
+
+singleframe:
+  latent_dim: 1024
+  encoder_type: residual
+  decoder_type: residual
+  checkpoint: ckpts/trace/a2c/base/best_model.pt
+
+base:
+  model_type: autoregressive
+  sequence_length: 8
+  latent_dim: 1024
+  encoder_hidden_dim: 2048
+  encoder_type: residual
+  decoder_type: residual
+  checkpoint: ckpts/trace/a2c/base/best_model.pt
+
+output:
+  save_dir: ckpts/trace/a2c/baselines/eval_results
