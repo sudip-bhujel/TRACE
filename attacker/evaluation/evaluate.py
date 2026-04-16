@@ -151,6 +151,7 @@ def evaluate_and_save_reconstructions(
     enable_fid: bool = True,
     num_actions: int = 5,
     model_type: str = "temporal",
+    teacher_forcing: bool = False,
 ):
     """
     Run evaluation on test data, compute comprehensive metrics, and save
@@ -192,7 +193,9 @@ def evaluate_and_save_reconstructions(
         with torch.no_grad():
             if model_type == "autoregressive":
                 pred_images, pred_actions, _, _ = model(
-                    gradients, teacher_forcing=False
+                    gradients,
+                    images=images.to(device) if teacher_forcing else None,
+                    teacher_forcing=teacher_forcing,
                 )
             else:
                 pred_images, pred_actions, _, _ = model(gradients)
@@ -306,6 +309,7 @@ def evaluate(
     ff_multiplier: int = 4,
     use_rope: bool = False,
     model_type: str = "temporal",
+    teacher_forcing: bool = False,
     **kwargs,
 ):
     """Main evaluation function."""
@@ -373,6 +377,7 @@ def evaluate(
 
     # Run evaluation
     print(f"\nGenerating reconstructions for {num_sequences} sequences...")
+    print(f"  Inference mode: {'teacher-forced' if teacher_forcing else 'autoregressive'}")
     evaluate_and_save_reconstructions(
         model=model,
         dataloader=dataloader,
@@ -382,6 +387,7 @@ def evaluate(
         enable_fid=enable_fid,
         num_actions=num_actions,
         model_type=model_type,
+        teacher_forcing=teacher_forcing,
     )
 
 
@@ -428,4 +434,5 @@ if __name__ == "__main__":
         ff_multiplier=model_cfg.get("ff_multiplier", 4),
         use_rope=model_cfg.get("use_rope", False),
         model_type=model_cfg.get("model_type", "autoregressive"),
+        teacher_forcing=eval_cfg.get("teacher_forcing", False),
     )
