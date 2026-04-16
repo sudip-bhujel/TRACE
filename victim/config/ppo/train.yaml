@@ -1,5 +1,7 @@
 # Victim PPO Training Configuration
-# Usage: python -m victim.train victim/config/train.yaml
+# Usage: python -m victim.train victim/config/ppo/train.yaml
+
+algorithm: ppo
 
 # Environment settings
 environment:

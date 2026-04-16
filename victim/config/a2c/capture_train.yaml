@@ -1,0 +1,55 @@
+# A2C Gradient Capture Configuration — Train Split
+# Usage: python -m victim.capture victim/config/a2c/capture_train.yaml
+
+environment:
+  scenes: [
+      # kitchens 1–27
+      "FloorPlan1",  "FloorPlan2",  "FloorPlan3",  "FloorPlan4",  "FloorPlan5",
+      "FloorPlan6",  "FloorPlan7",  "FloorPlan8",  "FloorPlan9",  "FloorPlan10",
+      "FloorPlan11", "FloorPlan12", "FloorPlan13", "FloorPlan14", "FloorPlan15",
+      "FloorPlan16", "FloorPlan17", "FloorPlan18", "FloorPlan19", "FloorPlan20",
+      "FloorPlan21", "FloorPlan22", "FloorPlan23", "FloorPlan24", "FloorPlan25",
+      "FloorPlan26", "FloorPlan27",
+      # living rooms 201–227
+      "FloorPlan201", "FloorPlan202", "FloorPlan203", "FloorPlan204", "FloorPlan205",
+      "FloorPlan206", "FloorPlan207", "FloorPlan208", "FloorPlan209", "FloorPlan210",
+      "FloorPlan211", "FloorPlan212", "FloorPlan213", "FloorPlan214", "FloorPlan215",
+      "FloorPlan216", "FloorPlan217", "FloorPlan218", "FloorPlan219", "FloorPlan220",
+      "FloorPlan221", "FloorPlan222", "FloorPlan223", "FloorPlan224", "FloorPlan225",
+      "FloorPlan226", "FloorPlan227",
+      # bedrooms 301–327
+      "FloorPlan301", "FloorPlan302", "FloorPlan303", "FloorPlan304", "FloorPlan305",
+      "FloorPlan306", "FloorPlan307", "FloorPlan308", "FloorPlan309", "FloorPlan310",
+      "FloorPlan311", "FloorPlan312", "FloorPlan313", "FloorPlan314", "FloorPlan315",
+      "FloorPlan316", "FloorPlan317", "FloorPlan318", "FloorPlan319", "FloorPlan320",
+      "FloorPlan321", "FloorPlan322", "FloorPlan323", "FloorPlan324", "FloorPlan325",
+      "FloorPlan326", "FloorPlan327",
+      # bathrooms 401–427
+      "FloorPlan401", "FloorPlan402", "FloorPlan403", "FloorPlan404", "FloorPlan405",
+      "FloorPlan406", "FloorPlan407", "FloorPlan408", "FloorPlan409", "FloorPlan410",
+      "FloorPlan411", "FloorPlan412", "FloorPlan413", "FloorPlan414", "FloorPlan415",
+      "FloorPlan416", "FloorPlan417", "FloorPlan418", "FloorPlan419", "FloorPlan420",
+      "FloorPlan421", "FloorPlan422", "FloorPlan423", "FloorPlan424", "FloorPlan425",
+      "FloorPlan426", "FloorPlan427",
+    ]
+  image_size: [84, 84]
+  max_steps: 100
+  headless: false
+
+model:
+  algorithm: a2c
+  checkpoint: "ckpts/victim/a2c/a2c_ai2thor_100.pt"
+  num_actions: 5
+
+capture:
+  steps_per_scene: 1000        # 1000 steps × 108 scenes = 1,080,000 total
+  gradient_layers: null        # null = all layers
+  save_path: "trajectory_data/a2c/gradients_train.h5"
+  compression: "gzip"
+  # Exact A2C loss — episode-buffered GAE, no clipping
+  gae_gamma:  0.99
+  gae_lambda: 0.95
+  vf_coef:    0.5
+  ent_coef:   0.01
+
+device: "auto"

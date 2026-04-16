@@ -50,6 +50,19 @@ def conv_block(in_c: int, out_c: int, k: int = 3, s: int = 2, p: int = 1):
     )
 
 
+class _ReshapeFlatten(nn.Module):
+    """Flatten using reshape (not view) for MPS backward compatibility.
+
+    ``nn.Flatten`` calls ``Tensor.view`` which requires contiguous memory.
+    On the MPS backend, BatchNorm2d can produce non-contiguous gradient
+    tensors for large batches, causing ``view`` to fail during backward.
+    ``reshape`` handles this transparently by copying when needed.
+    """
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x.reshape(x.size(0), -1)
+
+
 class ActorCritic(nn.Module):
     """Combined Actor-Critic network with shared CNN encoder."""
 
@@ -64,7 +77,7 @@ class ActorCritic(nn.Module):
             conv_block(32, 64, k=4, s=2, p=1),
             conv_block(64, 64, k=3, s=1, p=1),
             conv_block(64, 64, k=3, s=2, p=1),  # ! For smaller model
-            nn.Flatten(),
+            _ReshapeFlatten(),
         )
 
         # Compute conv output dimension
@@ -100,3 +113,9 @@ class ActorCritic(nn.Module):
         logits = self.policy(h)
         value = self.value(h).squeeze(-1)
         return logits, value
+
+
+# A2C uses the same shared CNN encoder + policy head + value head architecture
+# as ActorCritic.  The only difference is the training objective: policy
+# gradient without importance-sampling ratio or clipping.
+A2C = ActorCritic

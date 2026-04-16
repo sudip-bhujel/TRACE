@@ -1,5 +1,5 @@
-# PPO Gradient Dataset Augmentation — Test Split
-# Usage: python -m victim.augment.augment victim/config/ppo/augment_test.yaml
+# PPO Gradient Dataset Augmentation — Train Split
+# Usage: python -m victim.augment.augment victim/config/ppo/augment.yaml
 
 algorithm: ppo
 
@@ -8,8 +8,8 @@ model:
   num_actions: 5
 
 data:
-  input:      "trajectory_data/ppo/gradients_test.h5"
-  output:     "trajectory_data/ppo/gradients_test_augmented.h5"
+  input:      "trajectory_data/ppo/gradients_train.h5"
+  output:     "trajectory_data/ppo/gradients_train_augmented.h5"
   seed:       42
   batch_size: 100
 

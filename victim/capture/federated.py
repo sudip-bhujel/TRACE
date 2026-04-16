@@ -1,0 +1,279 @@
+import copy
+import os
+from typing import List, Optional, Tuple
+
+import h5py
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+from victim.capture.ppo import _client_gradient_a2c, _client_gradient_ppo
+from victim.capture.sac import _client_gradient_sac
+from victim.capture.utils import _extract_flat_gradient
+from victim.environment import AI2THORNavEnv
+from victim.models.actor_critic import ActorCritic, compute_gae
+from victim.models.sac import SAC
+
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+
+
+def _collect_ppo_rollout(
+    model: ActorCritic,
+    env: AI2THORNavEnv,
+    rollout_steps: int,
+    scene: Optional[str] = None,
+    gamma: float = 0.99,
+    lam: float = 0.95,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, np.ndarray]:
+    """Collect a PPO rollout and return tensors + raw uint8 images for storage."""
+    obs = env.reset(scene=scene) if scene else env.reset()
+    obs_list, act_list, logp_list, rew_list, done_list, val_list = [], [], [], [], [], []
+    images: List[np.ndarray] = []
+
+    for _ in range(rollout_steps):
+        images.append(obs)
+        obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+        with torch.no_grad():
+            logits, value = model(obs_t)
+            probs = F.softmax(logits, dim=-1)
+            dist = torch.distributions.Categorical(probs)
+            action = dist.sample().item()
+            logp = dist.log_prob(torch.tensor(action, device=device)).item()
+
+        next_obs, reward, done, _ = env.step(action)
+        obs_list.append(obs)
+        act_list.append(action)
+        logp_list.append(logp)
+        rew_list.append(reward)
+        done_list.append(done)
+        val_list.append(value.item())
+        obs = next_obs if not done else (env.reset(scene=scene) if scene else env.reset())
+
+    obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+    with torch.no_grad():
+        _, last_val = model(obs_t)
+
+    advantages, returns = compute_gae(
+        rew_list, val_list + [last_val.item()], done_list, gamma=gamma, lam=lam
+    )
+    adv = np.array(advantages, dtype=np.float32)
+    adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+
+    return (
+        torch.tensor(np.stack(obs_list), dtype=torch.float32, device=device),
+        torch.tensor(act_list, dtype=torch.long, device=device),
+        torch.tensor(logp_list, dtype=torch.float32, device=device),
+        torch.tensor(adv, dtype=torch.float32, device=device),
+        torch.tensor(returns, dtype=torch.float32, device=device),
+        np.stack(images),  # (T, C, H, W) uint8
+    )
+
+
+def _collect_offpolicy_batch(
+    model: torch.nn.Module,
+    env: AI2THORNavEnv,
+    rollout_steps: int,
+    scene: Optional[str] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, np.ndarray]:
+    """Collect a local batch of transitions for SAC and return tensors + images."""
+    obs = env.reset(scene=scene) if scene else env.reset()
+    obs_list, act_list, rew_list, nobs_list, done_list = [], [], [], [], []
+    images: List[np.ndarray] = []
+
+    for _ in range(rollout_steps):
+        images.append(obs)
+        obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+        with torch.no_grad():
+            _, probs = model.actor(obs_t)
+        action = torch.distributions.Categorical(probs=probs).sample().item()
+
+        next_obs, reward, done, _ = env.step(action)
+        obs_list.append(obs)
+        act_list.append(action)
+        rew_list.append(reward)
+        nobs_list.append(next_obs)
+        done_list.append(float(done))
+        obs = next_obs if not done else (env.reset(scene=scene) if scene else env.reset())
+
+    return (
+        torch.tensor(np.stack(obs_list), dtype=torch.float32, device=device),
+        torch.tensor(act_list, dtype=torch.long, device=device),
+        torch.tensor(rew_list, dtype=torch.float32, device=device),
+        torch.tensor(np.stack(nobs_list), dtype=torch.float32, device=device),
+        torch.tensor(done_list, dtype=torch.float32, device=device),
+        np.stack(images),  # (T, C, H, W) uint8
+    )
+
+
+def capture_federated(
+    model: torch.nn.Module,
+    env: AI2THORNavEnv,
+    save_path: str,
+    scenes: List[str],
+    num_rounds: int = 100,
+    num_clients: int = 10,
+    rollout_steps: int = 200,
+    algorithm: str = "ppo",
+    gradient_layers: Optional[List[str]] = None,
+    compression: str = "gzip",
+    # PPO hyperparams
+    gamma: float = 0.99,
+    lam: float = 0.95,
+    clip_eps: float = 0.2,
+    vf_coef: float = 0.5,
+    ent_coef: float = 0.01,
+    # SAC hyperparams
+    alpha: float = 0.2,
+) -> int:
+    """Federated gradient capture with exact training-loss objectives.
+
+    Simulates FL: each round, ``num_clients`` clients (each assigned a scene)
+    collect a local rollout and compute the **exact same gradient** they would
+    send to the server during real training.  The model weights are frozen —
+    only gradients are recorded, no server aggregation is performed.
+
+    Each record = one client upload per round.  Stored fields:
+    - ``gradients``  (grad_dim,)              — flat float16 gradient
+    - ``images``     (rollout_steps, C, H, W) — uint8 observations
+    - ``actions``    (rollout_steps,)          — int8
+    - ``rewards``    (rollout_steps,)          — float32
+    - ``client_ids`` scalar                    — client index
+    - ``round_ids``  scalar                    — FL round index
+
+    Args:
+        model:          Global model (weights kept frozen throughout capture).
+        env:            AI2THOR env (scenes are switched per client).
+        save_path:      Output HDF5 path.
+        scenes:         Scene pool; clients are assigned scenes round-robin.
+        num_rounds:     Number of FL communication rounds to simulate.
+        num_clients:    Clients participating per round.
+        rollout_steps:  Local steps each client collects per round.
+        algorithm:      ``"ppo"``, ``"a2c"``, or ``"sac"``.
+        gradient_layers: If set, only layers whose name contains one of these
+                         substrings are included in the gradient vector.
+        compression:    HDF5 compression codec.
+        gamma, lam:     GAE discount / lambda (PPO / A2C).
+        clip_eps, vf_coef, ent_coef: PPO loss coefficients (clip_eps unused by A2C).
+        alpha:          SAC temperature (fixed during capture).
+
+    Returns:
+        Total number of records written.
+    """
+    # For off-policy algorithms we need a frozen target network.
+    # Since the global model is not updated, the target is fixed too.
+    target_model = copy.deepcopy(model) if algorithm == "sac" else None
+    if target_model is not None:
+        target_model.requires_grad_(False)
+
+    # Probe once to get gradient dimensionality
+    print(f"[FL Capture] Probing gradient size for {algorithm.upper()}...")
+    scene0 = scenes[0]
+    if algorithm == "ppo":
+        obs_t, act_t, logp_t, adv_t, ret_t, imgs = _collect_ppo_rollout(
+            model, env, rollout_steps, scene=scene0, gamma=gamma, lam=lam
+        )
+        grad_probe = _client_gradient_ppo(
+            model, obs_t, act_t, logp_t, adv_t, ret_t,
+            clip_eps, vf_coef, ent_coef, gradient_layers,
+        )
+    elif algorithm == "a2c":
+        obs_t, act_t, logp_t, adv_t, ret_t, imgs = _collect_ppo_rollout(
+            model, env, rollout_steps, scene=scene0, gamma=gamma, lam=lam
+        )
+        grad_probe = _client_gradient_a2c(
+            model, obs_t, act_t, adv_t, ret_t,
+            vf_coef, ent_coef, gradient_layers,
+        )
+    elif algorithm == "sac":
+        obs_t, act_t, rew_t, nobs_t, done_t, imgs = _collect_offpolicy_batch(
+            model, env, rollout_steps, scene=scene0
+        )
+        grad_probe = _client_gradient_sac(
+            model, target_model, obs_t, act_t, rew_t, nobs_t, done_t,
+            gamma, alpha, gradient_layers,
+        )
+    else:
+        raise ValueError(f"Unknown algorithm '{algorithm}'. Choose: ppo, a2c, sac")
+
+    grad_dim = grad_probe.shape[0]
+    img_shape = imgs.shape[1:]  # (C, H, W)
+    total_records = num_rounds * num_clients
+
+    print(f"  Gradient dim : {grad_dim:,}  ({grad_dim * 2 / 1024:.1f} KB as float16)")
+    print(f"  Total records: {total_records:,}  ({num_rounds} rounds × {num_clients} clients)")
+    print(f"  Images/record: {rollout_steps}  shape={img_shape}")
+
+    os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+    with h5py.File(save_path, "w") as f:
+        f.create_dataset("gradients",  shape=(total_records, grad_dim),                  dtype=np.float16, compression=compression)
+        f.create_dataset("images",     shape=(total_records, rollout_steps, *img_shape),  dtype=np.uint8,   compression=compression)
+        f.create_dataset("actions",    shape=(total_records, rollout_steps),              dtype=np.int8,    compression=compression)
+        f.create_dataset("rewards",    shape=(total_records, rollout_steps),              dtype=np.float32, compression=compression)
+        f.create_dataset("client_ids", shape=(total_records,),                            dtype=np.int32,   compression=compression)
+        f.create_dataset("round_ids",  shape=(total_records,),                            dtype=np.int32,   compression=compression)
+    print(f"Created HDF5: {save_path}")
+
+    record_idx = 0
+    with h5py.File(save_path, "a") as f:
+        for round_idx in range(num_rounds):
+            for client_idx in range(num_clients):
+                scene = scenes[client_idx % len(scenes)]
+
+                if algorithm == "ppo":
+                    obs_t, act_t, logp_t, adv_t, ret_t, images = _collect_ppo_rollout(
+                        model, env, rollout_steps, scene=scene, gamma=gamma, lam=lam
+                    )
+                    grad = _client_gradient_ppo(
+                        model, obs_t, act_t, logp_t, adv_t, ret_t,
+                        clip_eps, vf_coef, ent_coef, gradient_layers,
+                    )
+                    actions_np = act_t.cpu().numpy().astype(np.int8)
+                    rewards_np = ret_t.cpu().numpy().astype(np.float32)
+                elif algorithm == "a2c":
+                    obs_t, act_t, logp_t, adv_t, ret_t, images = _collect_ppo_rollout(
+                        model, env, rollout_steps, scene=scene, gamma=gamma, lam=lam
+                    )
+                    grad = _client_gradient_a2c(
+                        model, obs_t, act_t, adv_t, ret_t,
+                        vf_coef, ent_coef, gradient_layers,
+                    )
+                    actions_np = act_t.cpu().numpy().astype(np.int8)
+                    rewards_np = ret_t.cpu().numpy().astype(np.float32)
+                elif algorithm == "sac":
+                    obs_t, act_t, rew_t, nobs_t, done_t, images = _collect_offpolicy_batch(
+                        model, env, rollout_steps, scene=scene
+                    )
+                    grad = _client_gradient_sac(
+                        model, target_model, obs_t, act_t, rew_t, nobs_t, done_t,
+                        gamma, alpha, gradient_layers,
+                    )
+                    actions_np = act_t.cpu().numpy().astype(np.int8)
+                    rewards_np = rew_t.cpu().numpy().astype(np.float32)
+
+                f["gradients"][record_idx]  = grad.astype(np.float16)
+                f["images"][record_idx]     = images
+                f["actions"][record_idx]    = actions_np
+                f["rewards"][record_idx]    = rewards_np
+                f["client_ids"][record_idx] = client_idx
+                f["round_ids"][record_idx]  = round_idx
+                record_idx += 1
+
+            if (round_idx + 1) % 10 == 0:
+                print(f"  Round {round_idx + 1:4d}/{num_rounds} | Records: {record_idx:,}")
+
+        f.attrs["algorithm"]     = algorithm
+        f.attrs["capture_mode"]  = "federated"
+        f.attrs["num_rounds"]    = num_rounds
+        f.attrs["num_clients"]   = num_clients
+        f.attrs["rollout_steps"] = rollout_steps
+        f.attrs["grad_dim"]      = grad_dim
+        f.attrs["total_records"] = record_idx
+        f.attrs["scenes"]        = [s.encode() for s in scenes]
+
+    print(f"\nFederated capture done. {record_idx:,} records → {save_path}")
+    return record_idx

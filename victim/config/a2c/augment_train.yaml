@@ -1,0 +1,30 @@
+# A2C Gradient Dataset Augmentation — Train Split
+# Usage: python -m victim.augment.augment victim/config/a2c/augment.yaml
+#
+# Uses the exact A2C loss (REINFORCE + GAE, no importance-sampling clipping).
+
+algorithm: a2c
+
+model:
+  checkpoint: "ckpts/victim/a2c/a2c_ai2thor_100.pt"
+  num_actions: 5
+
+data:
+  input:      "trajectory_data/a2c/gradients_train.h5"
+  output:     "trajectory_data/a2c/gradients_train_augmented.h5"
+  seed:       42
+  batch_size: 100
+
+augmentation:
+  num_augmentations: 2
+  brightness:  0.2
+  contrast:    0.2
+  saturation:  0.2
+  hue:         0.1
+
+loss:
+  gamma:    0.99
+  lam:      0.95
+  vf_coef:  0.5
+  ent_coef: 0.01
+  # clip_eps is not used by A2C
