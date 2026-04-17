@@ -58,10 +58,12 @@ def get_defense(defense_type: str, **kwargs) -> GradientDefense:
     """
     from defense.strategies.dp_sgd import DPSGDDefense
     from defense.strategies.gradient_pruning import GradientPruning
+    from defense.strategies.gradient_quantization import GradientQuantization
     from defense.strategies.noise_injection import NoiseInjection
 
     registry = {
         "pruning": GradientPruning,
+        "quantization": GradientQuantization,
         "noise": NoiseInjection,
         "dpsgd": DPSGDDefense,
     }

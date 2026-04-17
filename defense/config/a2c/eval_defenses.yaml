@@ -7,13 +7,14 @@
 device: auto
 
 data:
-  h5_path: trajectory_data/ppo/gradients_test.h5
+  h5_path: trajectory_data/a2c/gradients_test.h5
   gradient_dim: 936102
 
 model:
   model_type: autoregressive
   sequence_length: 8
   latent_dim: 1024
+  encoder_hidden_dim: 2048
   stride: 8 # Non-overlapping for evaluation
   num_transformer_layers: 6
   num_heads: 8
@@ -22,14 +23,27 @@ model:
   dropout: 0.1
 
 eval:
-  checkpoint: ckpts/autoregressive/base/best_model.pt
-  num_sequences: 100
+  checkpoint: ckpts/trace/a2c/base/best_model.pt
+  num_sequences: 20
   enable_fid: false
 
 output:
-  save_dir: ckpts/autoregressive/defense/base/eval_results
+  save_dir: ckpts/trace/a2c/defense/base/eval_results
 
 defenses:
+  # --- Gradient Quantization (standard in distributed RL) ---
+  - type: quantization
+    n_bits: 8 # 256 levels — low compression
+
+  - type: quantization
+    n_bits: 4 # 16 levels — moderate compression
+
+  - type: quantization
+    n_bits: 2 # 4 levels — aggressive compression
+
+  - type: quantization
+    n_bits: 1 # 1-bit sign compression
+
   # --- Gradient Pruning (top-k sparsification) ---
   - type: pruning
     keep_ratio: 0.9 # Keep 90%, prune 10%

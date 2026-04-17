@@ -236,6 +236,8 @@ def _pick_representative_rows(
             cat = "baseline"
         elif "pruning" in name:
             cat = "pruning"
+        elif "quantization" in name:
+            cat = "quantization"
         elif "noise" in name:
             cat = "noise"
         elif "dpsgd" in name:
@@ -244,14 +246,16 @@ def _pick_representative_rows(
             cat = name
         buckets.setdefault(cat, []).append(r)
 
+    _ORDERED_CATS = ("baseline", "quantization", "pruning", "noise", "dpsgd")
+
     selected: List[Dict[str, object]] = []
-    for cat in ("baseline", "pruning", "noise", "dpsgd"):
+    for cat in _ORDERED_CATS:
         entries = buckets.get(cat, [])
         if entries:
             selected.append(entries[len(entries) // 2])
 
     for cat, entries in buckets.items():
-        if cat not in ("baseline", "pruning", "noise", "dpsgd"):
+        if cat not in _ORDERED_CATS:
             selected.append(entries[len(entries) // 2])
 
     return selected
@@ -265,6 +269,12 @@ def _short_defense_label(name: str) -> str:
         ratio = name.split("keep")[-1]
         pct = int(float(ratio) * 100)
         return f"Pruning\n({pct}%)"
+    if name.startswith("quantization_"):
+        # e.g. "quantization_8bit" or "quantization_1bit_stoch"
+        parts = name.split("_")
+        bits = parts[1].replace("bit", "")
+        suffix = " (stoch)" if "stoch" in name else ""
+        return f"Quant.\n({bits}-bit{suffix})"
     if name.startswith("noise_abs_sigma"):
         sigma = name.split("sigma")[-1]
         return f"Noise\n($\\sigma$={sigma})"

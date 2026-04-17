@@ -23,14 +23,27 @@ model:
   dropout: 0.1
 
 eval:
-  checkpoint: ckpts/autoregressive/2048/base/best_model.pt
-  num_sequences: 100
+  checkpoint: ckpts/trace/ppo/base/best_model.pt
+  num_sequences: 20
   enable_fid: false
 
 output:
-  save_dir: ckpts/autoregressive/2048/defense/base/eval_results
+  save_dir: ckpts/trace/ppo/defense/base/eval_results
 
 defenses:
+  # --- Gradient Quantization (standard in distributed RL) ---
+  - type: quantization
+    n_bits: 8 # 256 levels — low compression
+
+  - type: quantization
+    n_bits: 4 # 16 levels — moderate compression
+
+  - type: quantization
+    n_bits: 2 # 4 levels — aggressive compression
+
+  - type: quantization
+    n_bits: 1 # 1-bit sign compression
+
   # --- Gradient Pruning (top-k sparsification) ---
   - type: pruning
     keep_ratio: 0.9 # Keep 90%, prune 10%
