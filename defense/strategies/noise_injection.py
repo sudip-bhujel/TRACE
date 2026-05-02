@@ -1,9 +1,4 @@
-"""
-Gaussian Noise Injection Defense.
-
-Adds isotropic Gaussian noise to gradients before sharing.
-Supports both absolute and relative noise.
-"""
+"""Additive Gaussian noise defense."""
 
 from typing import Any, Dict
 
@@ -14,14 +9,8 @@ from defense.base import GradientDefense
 
 class NoiseInjection(GradientDefense):
     """
-    Additive Gaussian noise defense.
-
-    Args:
-        sigma: Standard deviation of the Gaussian noise.
-        relative: If ``True``, *sigma* is multiplied by the L2 norm of
-            each gradient vector so that the noise magnitude scales with
-            the gradient.  If ``False`` (default), *sigma* is used as an
-            absolute standard deviation.
+    Add Gaussian noise of standard deviation ``sigma`` to each gradient.
+    When ``relative=True``, noise is scaled by the L2 norm of each vector.
     """
 
     def __init__(self, sigma: float = 0.01, relative: bool = False):
@@ -33,15 +22,6 @@ class NoiseInjection(GradientDefense):
         self.relative = relative
 
     def apply(self, gradients: torch.Tensor) -> torch.Tensor:
-        """
-        Add Gaussian noise to the gradient tensor.
-
-        Args:
-            gradients: (..., D) gradient tensor of any batch shape.
-
-        Returns:
-            Noisy gradient tensor of the same shape.
-        """
         if self.sigma == 0.0:
             return gradients
 

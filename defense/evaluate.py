@@ -1,10 +1,4 @@
-"""
-Defense Evaluation Script.
-
-Evaluates the impact of gradient defense mechanisms on reconstruction
-quality. Loads a trained attacker model, applies each configured defense
-to the test gradients, and reports per-defense metrics.
-"""
+"""Evaluate the impact of gradient defenses on attacker reconstruction quality."""
 
 import csv
 import json
@@ -39,28 +33,10 @@ def evaluate_with_defense(
     defense: Optional[GradientDefense],
     num_sequences: int = 20,
     enable_fid: bool = False,
-    num_actions: int = 5,
     collect_first_sequence: bool = False,
     model_type: str = "temporal",
 ) -> Dict[str, object]:
-    """
-    Run evaluation with a specific defense applied to gradients.
-
-    Args:
-        model: Trained attacker model.
-        dataloader: Test data loader yielding (gradients, images, actions).
-        device: Torch device.
-        defense: Defense to apply, or ``None`` for the undefended baseline.
-        num_sequences: Number of sequences to evaluate.
-        enable_fid: Whether to compute FID (slow).
-        num_actions: Number of discrete actions.
-        collect_first_sequence: If ``True``, include the first sequence's
-            ground-truth images and predicted images in the returned dict
-            (keys ``"gt_images"`` and ``"pred_images"``).
-
-    Returns:
-        Dict of metric name to value (and optionally image tensors).
-    """
+    """Evaluate the attacker model with ``defense`` applied to gradients."""
     model.eval()
     metrics = MetricsComputer(device, compute_fid_flag=enable_fid)
 
@@ -111,20 +87,7 @@ def evaluate_with_defense(
 
 
 def build_defense_configs(cfg) -> List[Optional[GradientDefense]]:
-    """
-    Build a list of defense instances from the YAML config.
-
-    The config ``defenses`` section is a list of dicts, each with a
-    ``type`` key and defense-specific parameters.  An implicit baseline
-    (``None``) is always prepended.
-
-    Args:
-        cfg: OmegaConf config with a ``defenses`` key.
-
-    Returns:
-        List starting with ``None`` (baseline) followed by configured
-        defenses.
-    """
+    """Build defenses from the YAML config; the undefended baseline is prepended."""
     defenses: List[Optional[GradientDefense]] = [None]
 
     for entry in cfg.get("defenses", []):
@@ -139,17 +102,7 @@ def _save_reconstruction_grid(
     all_results: List[Dict[str, object]],
     save_dir: Path,
 ):
-    """
-    Save a reconstruction grid comparing defenses on the same sequence.
-
-    Layout::
-
-        Row 0:  Ground Truth   (T frames)
-        Row 1:  No defense     (T reconstructed frames)
-        Row 2:  Defense A      ...
-        Row 3:  Defense B      ...
-        ...
-    """
+    """Save a grid comparing ground truth and per-defense reconstructions."""
     rows_with_images = [r for r in all_results if r.get("pred_images") is not None]
     if not rows_with_images:
         return
@@ -223,12 +176,7 @@ def _save_reconstruction_grid(
 def _pick_representative_rows(
     rows: List[Dict[str, object]],
 ) -> List[Dict[str, object]]:
-    """
-    Select one representative result per defense category.
-
-    Picks the middle configuration when multiple are available
-    (e.g. for 3 pruning levels, picks the 2nd).
-    """
+    """Pick one representative result per defense category for the grid."""
     buckets: Dict[str, List[Dict[str, object]]] = {}
     for r in rows:
         name = r.get("defense", "")
@@ -252,7 +200,8 @@ def _pick_representative_rows(
     for cat in _ORDERED_CATS:
         entries = buckets.get(cat, [])
         if entries:
-            selected.append(entries[len(entries) // 2])
+            idx = 1 if cat == "quantization" else len(entries) // 2
+            selected.append(entries[min(idx, len(entries) - 1)])
 
     for cat, entries in buckets.items():
         if cat not in _ORDERED_CATS:
@@ -262,7 +211,6 @@ def _pick_representative_rows(
 
 
 def _short_defense_label(name: str) -> str:
-    """Convert internal defense names to short readable labels."""
     if name == "none":
         return "No\nDefense"
     if name.startswith("pruning_keep"):
@@ -270,7 +218,6 @@ def _short_defense_label(name: str) -> str:
         pct = int(float(ratio) * 100)
         return f"Pruning\n({pct}%)"
     if name.startswith("quantization_"):
-        # e.g. "quantization_8bit" or "quantization_1bit_stoch"
         parts = name.split("_")
         bits = parts[1].replace("bit", "")
         suffix = " (stoch)" if "stoch" in name else ""
@@ -284,7 +231,6 @@ def _short_defense_label(name: str) -> str:
     if name.startswith("dpsgd_eps"):
         parts = name.replace("dpsgd_eps", "").split("_delta")
         eps = parts[0]
-        # Convert e.g. "1.0e-05" → "$10^{-5}$"
         delta_str = parts[1]
         try:
             exp = int(float(delta_str.split("e")[1]))
@@ -355,12 +301,7 @@ def _save_comparison_chart(
 
 
 def run_defense_evaluation(cfg):
-    """
-    Main evaluation loop driven by an OmegaConf config.
-
-    Args:
-        cfg: Full configuration (data, model, eval, defenses, output).
-    """
+    """Run the full evaluation loop driven by an OmegaConf config."""
     device_str = cfg.get("device", "auto")
     if device_str == "auto":
         if torch.cuda.is_available():
@@ -420,8 +361,15 @@ def run_defense_evaluation(cfg):
         num_transformer_layers=model_cfg.get("num_transformer_layers", 4),
         num_heads=model_cfg.get("num_heads", 8),
         encoder_hidden_dims=model_cfg.get("encoder_hidden_dims", None),
+        encoder_hidden_dim=model_cfg.get("encoder_hidden_dim", None),
+        encoder_num_blocks=model_cfg.get("encoder_num_blocks", None),
+        encoder_expansion=model_cfg.get("encoder_expansion", None),
+        encoder_projection_rank=model_cfg.get("encoder_projection_rank", None),
         encoder_type=model_cfg.get("encoder_type", "basic"),
         decoder_type=model_cfg.get("decoder_type", "basic"),
+        temporal_model_type=model_cfg.get("temporal_model_type", "transformer"),
+        ff_multiplier=model_cfg.get("ff_multiplier", 4),
+        use_rope=model_cfg.get("use_rope", False),
         model_type=model_type,
     )
 
@@ -454,7 +402,6 @@ def run_defense_evaluation(cfg):
             defense=defense,
             num_sequences=num_sequences,
             enable_fid=enable_fid,
-            num_actions=num_actions,
             collect_first_sequence=True,
             model_type=model_type,
         )
@@ -463,7 +410,7 @@ def run_defense_evaluation(cfg):
             results["epsilon"] = defense.epsilon
             results["delta"] = defense.delta
 
-        _print_results(results)
+        print_results(results)
         all_results.append(results)
 
     results_path = save_dir / "defense_results.json"
@@ -484,11 +431,6 @@ def run_defense_evaluation(cfg):
     _save_reconstruction_grid(all_results, save_dir)
 
     _save_summary_csv(all_results, save_dir)
-
-
-def _print_results(results: Dict[str, float]):
-    """Pretty-print a single defense's metrics."""
-    print_results(results)
 
 
 def _save_summary_csv(all_results: List[Dict[str, float]], save_dir: Path):

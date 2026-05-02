@@ -1,16 +1,4 @@
-"""
-Gradient Defense Mechanisms for Federated RL Privacy.
-
-This package implements defenses that a server or client can apply to
-shared gradients before transmission, reducing the information available
-to a gradient inversion attacker.
-
-Available defenses:
-    - GradientPruning: Top-k sparsification by magnitude.
-    - GradientQuantization: Uniform quantization to n-bit levels (QSGD-style).
-    - NoiseInjection: Additive Gaussian noise.
-    - DPSGDDefense: Differential-privacy calibrated clipping + noise.
-"""
+"""Gradient defense mechanisms applied before sharing gradients."""
 
 from defense.base import GradientDefense, get_defense
 from defense.strategies.dp_sgd import DPSGDDefense

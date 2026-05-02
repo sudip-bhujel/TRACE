@@ -1,8 +1,4 @@
-"""
-Gradient Pruning Defense.
-
-Applies top-k magnitude sparsification to gradients.
-"""
+"""Top-k magnitude sparsification defense."""
 
 from typing import Any, Dict
 
@@ -12,16 +8,7 @@ from defense.base import GradientDefense
 
 
 class GradientPruning(GradientDefense):
-    """
-    Top-k sparsification defense.
-
-    Retains only the top ``keep_ratio`` fraction of gradient entries by
-    absolute magnitude and zeros out the rest.
-
-    Args:
-        keep_ratio: Fraction of gradient entries to keep (0, 1].
-            For example, 0.1 means keep the top 10% and zero out 90%.
-    """
+    """Retain the top ``keep_ratio`` fraction of gradient entries by magnitude."""
 
     def __init__(self, keep_ratio: float = 0.1):
         if not 0.0 < keep_ratio <= 1.0:
@@ -30,16 +17,6 @@ class GradientPruning(GradientDefense):
         self.keep_ratio = keep_ratio
 
     def apply(self, gradients: torch.Tensor) -> torch.Tensor:
-        """
-        Apply top-k pruning to gradient tensor.
-
-        Args:
-            gradients: (..., D) gradient tensor of any batch shape.
-
-        Returns:
-            Pruned gradient tensor with the same shape. Entries outside
-            the top-k by magnitude are set to zero.
-        """
         if self.keep_ratio >= 1.0:
             return gradients
 

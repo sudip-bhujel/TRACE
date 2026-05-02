@@ -1,9 +1,4 @@
-"""
-Base class for gradient defense mechanisms.
-
-All defenses accept a gradient tensor and return a defended (transformed)
-gradient tensor of the same shape.
-"""
+"""Base class and factory for gradient defense mechanisms."""
 
 from abc import ABC, abstractmethod
 from typing import Any, Dict
@@ -12,50 +7,24 @@ import torch
 
 
 class GradientDefense(ABC):
-    """
-    Abstract base class for gradient defense transformations.
-
-    Subclasses must implement :meth:`apply` which takes a gradient tensor
-    and returns the defended version.
-    """
+    """Abstract base class for gradient defense transformations."""
 
     def __init__(self, name: str = "base"):
         self.name = name
 
     @abstractmethod
     def apply(self, gradients: torch.Tensor) -> torch.Tensor:
-        """
-        Apply the defense to a batch of gradient sequences.
-
-        Args:
-            gradients: (B, T, D) or (T, D) or (D,) gradient tensor.
-
-        Returns:
-            Defended gradient tensor of the same shape.
-        """
+        """Apply the defense and return a tensor of the same shape."""
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(name={self.name!r})"
 
     def summary(self) -> Dict[str, Any]:
-        """Return a dict describing this defense for logging."""
         return {"name": self.name, "type": self.__class__.__name__}
 
 
 def get_defense(defense_type: str, **kwargs) -> GradientDefense:
-    """
-    Factory function for gradient defenses.
-
-    Args:
-        defense_type: One of ``"pruning"``, ``"noise"``, ``"dpsgd"``.
-        **kwargs: Forwarded to the defense constructor.
-
-    Returns:
-        Configured :class:`GradientDefense` instance.
-
-    Raises:
-        ValueError: If *defense_type* is unknown.
-    """
+    """Construct a defense by name. Supported: pruning, quantization, noise, dpsgd."""
     from defense.strategies.dp_sgd import DPSGDDefense
     from defense.strategies.gradient_pruning import GradientPruning
     from defense.strategies.gradient_quantization import GradientQuantization

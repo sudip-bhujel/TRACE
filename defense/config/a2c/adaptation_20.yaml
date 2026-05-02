@@ -1,5 +1,5 @@
-# Defense evaluation configuration.
-# Usage: uv run -m defense.evaluate defense/config/a2c/eval_defenses.yaml
+# Defense evaluation configuration (adaptation checkpoint, 20-sequence subset).
+# Usage: uv run -m defense.evaluate defense/config/a2c/adaptation_20.yaml
 
 device: auto
 
@@ -20,12 +20,12 @@ model:
   dropout: 0.1
 
 eval:
-  checkpoint: ckpts/trace/a2c/base/best_model.pt
-  num_sequences: 100
+  checkpoint: ckpts/trace/a2c/adaptation/20/best_model.pt
+  num_sequences: 20
   enable_fid: false
 
 output:
-  save_dir: ckpts/trace/a2c/defense/base/eval_results
+  save_dir: ckpts/trace/a2c/defense/adaptation_20/eval_results
 
 defenses:
   # Gradient quantization
