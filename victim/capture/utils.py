@@ -21,18 +21,20 @@ def load_model(
     num_actions: int = 5,
     algorithm: str = "ppo",
 ) -> torch.nn.Module:
-    """Load trained model from checkpoint.  Supports ppo, a2c, sac."""
+    """Load a trained victim checkpoint. Supports ppo, a2c, sac."""
     algorithm = algorithm.lower()
     if algorithm == "sac":
         model = SAC(in_channels=3, num_actions=num_actions).to(device)
-    else:  # ppo, a2c — both use ActorCritic
+    else:
         model = ActorCritic(in_channels=3, num_actions=num_actions).to(device)
 
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
     if "model_state_dict" in checkpoint:
         model.load_state_dict(checkpoint["model_state_dict"])
-        print(f"Loaded {algorithm.upper()} checkpoint (step={checkpoint.get('step') or checkpoint.get('update', '?')})")
+        print(
+            f"Loaded {algorithm.upper()} checkpoint (step={checkpoint.get('step') or checkpoint.get('update', '?')})"
+        )
         print(f"  Episodes: {len(checkpoint.get('episode_rewards', []))}")
     else:
         model.load_state_dict(checkpoint)
@@ -44,7 +46,6 @@ def load_model(
 
 
 def flatten_gradients(gradients: dict) -> np.ndarray:
-    """Flatten all gradients into a single 1D array."""
     flat_grads = []
     for name in sorted(gradients.keys()):
         flat_grads.append(gradients[name].flatten())
@@ -55,12 +56,13 @@ def _extract_flat_gradient(
     model: torch.nn.Module,
     gradient_layers: Optional[List[str]] = None,
 ) -> np.ndarray:
-    """Flatten all (filtered) gradients from a model into a float32 array."""
     parts = []
     for name, param in sorted(model.named_parameters()):
         if param.grad is None:
             continue
-        if gradient_layers is not None and not any(layer in name for layer in gradient_layers):
+        if gradient_layers is not None and not any(
+            layer in name for layer in gradient_layers
+        ):
             continue
         parts.append(param.grad.detach().cpu().float().numpy().flatten())
     return np.concatenate(parts) if parts else np.array([], dtype=np.float32)
@@ -75,18 +77,7 @@ def create_hdf5_dataset(
     compression_level: int = 4,
     with_next_images: bool = False,
 ) -> None:
-    """Create HDF5 file with pre-allocated datasets.
-
-    Args:
-        save_path: Path to write the HDF5 file.
-        num_steps: Initial (pre-allocated) number of rows.
-        gradient_size: Flattened gradient length.
-        image_shape: Shape of each observation image (C, H, W).
-        compression: HDF5 compression codec.
-        compression_level: Compression level (0–9 for gzip).
-        with_next_images: When True, also create a ``next_images`` dataset
-            (needed for SAC exact-loss capture/augmentation).
-    """
+    """Pre-allocate HDF5 datasets for gradient capture."""
     with h5py.File(save_path, "w") as f:
         f.create_dataset(
             "images",
@@ -148,18 +139,14 @@ def create_hdf5_dataset(
 
 
 def print_file_info(save_path: str) -> None:
-    """Print information about the saved HDF5 file."""
     with h5py.File(save_path, "r") as f:
-        print("\n" + "=" * 60)
-        print("HDF5 File Information")
-        print("=" * 60)
-        print(f"File: {save_path}")
+        print(f"\nHDF5: {save_path}")
         file_size_mb = os.path.getsize(save_path) / (1024 * 1024)
         print(f"Size: {file_size_mb:.1f} MB")
-        print("\nMetadata:")
+        print("Metadata:")
         for key, value in f.attrs.items():
             print(f"  {key}: {value}")
-        print("\nDatasets:")
+        print("Datasets:")
         for key in f.keys():
             ds = f[key]
             size_mb = ds.nbytes / (1024 * 1024)

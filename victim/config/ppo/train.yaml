@@ -1,9 +1,8 @@
-# Victim PPO Training Configuration
-# Usage: python -m victim.train victim/config/ppo/train.yaml
+# Victim PPO training configuration.
+# Usage: python -m victim.training.train victim/config/ppo/train.yaml
 
 algorithm: ppo
 
-# Environment settings
 environment:
   scenes:
     - "FloorPlan1"
@@ -20,7 +19,6 @@ environment:
   max_steps: 200
   headless: false
 
-# PPO hyperparameters
 ppo:
   total_updates: 500
   steps_per_update: 1024
@@ -34,12 +32,10 @@ ppo:
   value_coef: 0.5
   max_grad_norm: 0.5
 
-# Training settings
 training:
   seed: 42
   resume_from: null
 
-# Output settings
 output:
   save_dir: "ckpts/victim"
   plot_path: "output/victim_results.png"

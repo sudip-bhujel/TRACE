@@ -9,16 +9,7 @@ from victim.models.actor_critic import _ReshapeFlatten, conv_block
 
 
 class ReplayBuffer:
-    """Fixed-size experience replay buffer for off-policy RL algorithms.
-
-    Stores observations as uint8 to minimise memory; converts to float32 on
-    sample.
-
-    Args:
-        capacity: Maximum number of transitions to store.
-        obs_shape: Shape of a single observation, e.g. ``(3, 84, 84)``.
-        device: Device used for sampled tensors.
-    """
+    """Fixed-size replay buffer storing observations as uint8."""
 
     def __init__(
         self,
@@ -68,29 +59,12 @@ class ReplayBuffer:
 
 
 class SAC(nn.Module):
-    """Discrete Soft Actor-Critic.
+    """
+    Discrete Soft Actor-Critic (Christodoulou, 2019).
 
-    Shares a CNN backbone between the stochastic actor and twin Q-critics.
-    Designed for environments with discrete action spaces.
-
-    Architecture
-    ------------
-    encoder (CNN, shared) → fc (shared) → actor_head  (logits over actions)
-                                        → q1_head     (Q-values per action)
-                                        → q2_head     (Q-values per action)
-
-    Training uses *separate* optimisers so that the actor optimiser only
-    updates ``actor_head`` while the critic optimiser updates the full
-    shared encoder plus both Q-heads.
-
-    Reference
-    ---------
-    Christodoulou (2019) "Soft Actor-Critic for Discrete Action Settings".
-
-    Args:
-        in_channels: Input image channels.
-        num_actions: Number of discrete actions.
-        hidden_size: Width of the shared FC layer.
+    Shared CNN encoder feeds an actor head and twin Q-heads. The critic
+    optimiser updates the encoder and Q-heads; the actor optimiser updates
+    only the actor head.
     """
 
     def __init__(
@@ -111,10 +85,7 @@ class SAC(nn.Module):
 
         self.fc = nn.Sequential(nn.Linear(conv_dim, hidden_size), nn.ReLU())
 
-        # Actor head — outputs action logits
         self.actor_head = nn.Linear(hidden_size, num_actions)
-
-        # Twin Q-heads — output Q(s, a) for all a simultaneously
         self.q1_head = nn.Linear(hidden_size, num_actions)
         self.q2_head = nn.Linear(hidden_size, num_actions)
 
@@ -122,18 +93,17 @@ class SAC(nn.Module):
         return self.fc(self.encoder(x.float() / 255.0))
 
     def actor(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return ``(log_probs, probs)`` each of shape ``(B, A)``."""
         logits = self.actor_head(self._encode(x))
         log_probs = F.log_softmax(logits, dim=-1)
         return log_probs, log_probs.exp()
 
     def critics(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return ``(Q1, Q2)`` each of shape ``(B, A)``."""
         h = self._encode(x)
         return self.q1_head(h), self.q2_head(h)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return ``(log_probs, Q1, Q2)``."""
+    def forward(
+        self, x: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         h = self._encode(x)
         log_probs = F.log_softmax(self.actor_head(h), dim=-1)
         return log_probs, self.q1_head(h), self.q2_head(h)

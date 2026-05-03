@@ -1,5 +1,5 @@
-# Victim SAC Training Configuration
-# Usage: python -m victim.train victim/config/sac/train.yaml
+# Victim SAC training configuration.
+# Usage: python -m victim.training.train victim/config/sac/train.yaml
 
 algorithm: sac
 
@@ -19,17 +19,16 @@ environment:
   max_steps: 200
   headless: false
 
-# SAC hyperparameters
 sac:
   total_steps: 500000
   batch_size: 256
   buffer_size: 100000
-  learning_starts: 5000       # random exploration steps before training
+  learning_starts: 5000
   gamma: 0.99
-  tau: 0.005                  # soft target-network update rate
+  tau: 0.005
   learning_rate: 3.0e-4
-  target_entropy_ratio: 0.50  # target entropy as fraction of log(num_actions)
-  train_freq: 1               # gradient updates per env step
+  target_entropy_ratio: 0.50
+  train_freq: 1
 
 training:
   seed: 42

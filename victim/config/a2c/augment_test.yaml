@@ -1,4 +1,4 @@
-# A2C Gradient Dataset Augmentation — Test Split
+# A2C gradient dataset augmentation - test split.
 # Usage: python -m victim.augment.augment victim/config/a2c/augment_test.yaml
 
 algorithm: a2c

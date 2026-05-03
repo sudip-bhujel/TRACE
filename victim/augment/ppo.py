@@ -30,14 +30,19 @@ def _compute_ppo_gradient_from_targets(
     vf_coef: float = 0.5,
     ent_coef: float = 0.01,
 ) -> np.ndarray:
-    """Compute exact PPO-style gradient from precomputed episode-level targets."""
     model.zero_grad()
 
     obs_tensor = torch.tensor(image, dtype=torch.float32, device=device).unsqueeze(0)
     action_tensor = torch.tensor(action, dtype=torch.long, device=device)
-    old_logp_tensor = torch.tensor(old_log_prob, dtype=torch.float32, device=device).unsqueeze(0)
-    advantage_tensor = torch.tensor(advantage, dtype=torch.float32, device=device).unsqueeze(0)
-    return_tensor = torch.tensor(returns, dtype=torch.float32, device=device).unsqueeze(0)
+    old_logp_tensor = torch.tensor(
+        old_log_prob, dtype=torch.float32, device=device
+    ).unsqueeze(0)
+    advantage_tensor = torch.tensor(
+        advantage, dtype=torch.float32, device=device
+    ).unsqueeze(0)
+    return_tensor = torch.tensor(returns, dtype=torch.float32, device=device).unsqueeze(
+        0
+    )
 
     logits, value = model(obs_tensor)
     probs = F.softmax(logits, dim=-1)
@@ -68,31 +73,10 @@ def augment_ppo(
     vf_coef: float = 0.5,
     ent_coef: float = 0.01,
 ) -> int:
-    """Augment a PPO dataset using the exact PPO loss with episode-buffered GAE targets.
-
-    First pass: re-runs the model on every stored observation to collect
-    values and log-probs, then groups steps by episode_id into
-    PPOGradientBuffers.  Second pass: for each augmentation, applies colour
-    jitter to each step and recomputes the exact per-step PPO gradient using
-    the buffered GAE advantages and returns.
-
-    Args:
-        f_in: Open input HDF5 file.
-        f_out: Open output HDF5 file (datasets already created and originals copied).
-        model: Frozen ActorCritic checkpoint.
-        out_idx: Write cursor — index of the first augmented slot in f_out.
-        num_augmentations: Number of colour-jitter copies per original step.
-        jitter_kwargs: kwargs forwarded to apply_color_jitter.
-        gamma, lam: GAE discount and lambda.
-        clip_eps, vf_coef, ent_coef: PPO loss coefficients.
-
-    Returns:
-        Updated out_idx after all augmented samples are written.
-    """
+    """Augment a PPO dataset using exact PPO loss with episode-buffered GAE targets."""
     num_original = f_in["images"].shape[0]
 
-    # --- Pass 1: collect episode buffers ---
-    print("\n[PPO] Collecting episode data for GAE computation...")
+    print("\n[PPO] Collecting episode data for GAE...")
     episode_buffers: Dict[int, PPOGradientBuffer] = {}
 
     for i in tqdm(range(num_original), desc="Collecting episodes"):
@@ -105,7 +89,9 @@ def augment_ppo(
         if sample_ep_id not in episode_buffers:
             episode_buffers[sample_ep_id] = PPOGradientBuffer(gamma=gamma, lam=lam)
 
-        obs_tensor = torch.tensor(sample_obs, dtype=torch.float32, device=device).unsqueeze(0)
+        obs_tensor = torch.tensor(
+            sample_obs, dtype=torch.float32, device=device
+        ).unsqueeze(0)
         with torch.no_grad():
             logits, value = model(obs_tensor)
             probs = F.softmax(logits, dim=-1)
@@ -124,7 +110,6 @@ def augment_ppo(
 
     print(f"  Collected {len(episode_buffers)} episodes")
 
-    # --- Pass 2: augment ---
     for aug_num in range(num_augmentations):
         print(f"\n[Augmentation {aug_num + 1}/{num_augmentations}]")
         for ep_id, ep_buf in tqdm(episode_buffers.items(), desc="Augmenting episodes"):

@@ -1,9 +1,5 @@
-# SAC Gradient Dataset Augmentation — Train Split
+# SAC gradient dataset augmentation - train split.
 # Usage: python -m victim.augment.augment victim/config/sac/augment_train.yaml
-#
-# Uses exact SAC loss (critic + actor) when the input HDF5 was captured with
-# capture_sac_exact_gradients (contains next_images).  Falls back to probe
-# loss automatically if next_images is absent.
 
 algorithm: sac
 

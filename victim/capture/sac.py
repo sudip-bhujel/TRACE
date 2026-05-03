@@ -5,7 +5,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from victim.capture.utils import _extract_flat_gradient, create_hdf5_dataset, flatten_gradients
+from victim.capture.utils import (
+    _extract_flat_gradient,
+    create_hdf5_dataset,
+    flatten_gradients,
+)
 from victim.environment import AI2THORNavEnv
 from victim.models.sac import SAC
 
@@ -23,7 +27,7 @@ def compute_sac_gradients(
     gradient_layers: Optional[List[str]] = None,
     use_float16: bool = True,
 ) -> Dict[str, np.ndarray]:
-    """Probe loss for SAC: actor loss (entropy-regularised Q maximisation, α=1)."""
+    """SAC probe loss: actor entropy-regularised Q maximisation (alpha=1)."""
     model.zero_grad()
     log_probs, probs = model.actor(observation)
     q1, q2 = model.critics(observation)
@@ -56,13 +60,15 @@ def _client_gradient_sac(
     alpha: float = 0.2,
     gradient_layers: Optional[List[str]] = None,
 ) -> np.ndarray:
-    """Exact SAC loss gradient (critic + actor combined) — identical to train.py."""
+    """Exact SAC loss gradient (critic + actor) over a local batch."""
     model.zero_grad()
 
     with torch.no_grad():
         next_log_probs, next_probs = target_model.actor(next_obs_b)
         next_q1, next_q2 = target_model.critics(next_obs_b)
-        next_v = (next_probs * (torch.min(next_q1, next_q2) - alpha * next_log_probs)).sum(-1)
+        next_v = (
+            next_probs * (torch.min(next_q1, next_q2) - alpha * next_log_probs)
+        ).sum(-1)
         target_q = rew_b + gamma * (1.0 - done_b) * next_v
 
     q1, q2 = model.critics(obs_b)
@@ -92,28 +98,7 @@ def compute_sac_exact_gradient(
     gradient_layers: Optional[List[str]] = None,
     use_float16: bool = True,
 ) -> Dict[str, np.ndarray]:
-    """Compute exact SAC gradient for a single transition (critic + actor).
-
-    Identical loss to SAC training: Bellman critic loss on twin Q-networks
-    plus entropy-regularised actor loss.  ``target_model`` provides the soft
-    value bootstrap for the critic target.
-
-    Args:
-        model: Online SAC model (gradients computed here).
-        target_model: Target SAC network for bootstrapping (frozen, no_grad).
-        obs_t: Current observation tensor (1, C, H, W).
-        action: Discrete action taken.
-        reward: Scalar reward received.
-        next_obs_t: Next observation tensor (1, C, H, W).
-        done: Whether the episode ended after this transition.
-        gamma: Discount factor.
-        alpha: Entropy regularisation coefficient.
-        gradient_layers: Layer name filter (None = all).
-        use_float16: Cast gradients to float16 before returning.
-
-    Returns:
-        Dict of parameter-name → gradient array.
-    """
+    """Exact SAC gradient (critic + actor) for a single transition."""
     model.zero_grad()
 
     act_b = torch.tensor([action], dtype=torch.long, device=obs_t.device)
@@ -166,50 +151,34 @@ def capture_sac_exact_gradients(
     gamma: float = 0.99,
     alpha: float = 0.2,
 ) -> int:
-    """Capture per-step exact SAC gradients (critic + actor), storing next_images.
-
-    Uses the exact SAC training loss for each transition.  ``next_obs`` is
-    available in memory during rollout so the Bellman target can be computed
-    without any HDF5 schema change at capture time.  The ``next_images`` field
-    is written alongside ``images`` so that augmentation can later reproduce
-    the same exact loss.
-
-    Args:
-        model: Frozen SAC checkpoint (online network).
-        target_model: Target SAC network (typically same weights for frozen capture).
-        env: AI2-THOR navigation environment.
-        save_path: HDF5 output path.
-        scenes: List of scene names.
-        steps_per_scene: Steps to capture per scene.
-        max_steps_per_episode: Maximum steps per episode before forced reset.
-        gradient_layers: Layer name filter (None = all).
-        compression: HDF5 compression codec.
-        gamma: SAC discount factor.
-        alpha: SAC entropy regularisation coefficient.
-
-    Returns:
-        Total number of steps written.
-    """
-    # Probe gradient size
+    """Capture per-step exact SAC gradients (critic + actor); also stores next_images."""
     obs = env.reset(scene=scenes[0])
     next_obs_probe = env.reset(scene=scenes[0])
     obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-    next_obs_t = torch.tensor(next_obs_probe, dtype=torch.float32, device=device).unsqueeze(0)
+    next_obs_t = torch.tensor(
+        next_obs_probe, dtype=torch.float32, device=device
+    ).unsqueeze(0)
     test_grads = compute_sac_exact_gradient(
-        model, target_model, obs_t, 0, 0.0, next_obs_t, False,
-        gamma=gamma, alpha=alpha, gradient_layers=gradient_layers,
+        model,
+        target_model,
+        obs_t,
+        0,
+        0.0,
+        next_obs_t,
+        False,
+        gamma=gamma,
+        alpha=alpha,
+        gradient_layers=gradient_layers,
     )
     gradient_size = len(flatten_gradients(test_grads))
     total_steps = steps_per_scene * len(scenes)
 
-    print("SAC Gradient Capture (exact loss — critic + actor)")
-    print(f"  Loss params: gamma={gamma}, alpha={alpha}")
+    print("SAC Gradient Capture (exact loss)")
+    print(f"  gamma={gamma}, alpha={alpha}")
+    print(f"  {steps_per_scene} steps x {len(scenes)} scenes = {total_steps:,} total")
     print(
-        f"  Uniform capture: {steps_per_scene} steps x {len(scenes)} scenes = "
-        f"{total_steps:,} total"
+        f"  Gradient size: {gradient_size:,} ({gradient_size * 2 / 1024:.1f} KB/step)"
     )
-    print(f"  Gradient size: {gradient_size:,} values ({gradient_size * 2 / 1024:.1f} KB per step)")
-    print(f"  Storing next_images for exact augmentation")
 
     create_hdf5_dataset(
         save_path,
@@ -248,12 +217,16 @@ def capture_sac_exact_gradients(
                     ).unsqueeze(0)
                     with torch.no_grad():
                         _, probs = model.actor(obs_t)
-                        action = torch.distributions.Categorical(probs=probs).sample().item()
+                        action = (
+                            torch.distributions.Categorical(probs=probs).sample().item()
+                        )
 
                     try:
                         next_obs, reward, done, info = env.step(action)
                     except Exception as e:
-                        print(f"Critical error in scene {scene}: {e}. Skipping episode.")
+                        print(
+                            f"Critical error in scene {scene}: {e}. Skipping episode."
+                        )
                         break
 
                     ep_reward += reward
@@ -304,8 +277,15 @@ def capture_sac_exact_gradients(
                 f"avg_reward={avg_reward:.2f}"
             )
 
-        # Trim to actual size
-        keys = ["images", "next_images", "gradients", "actions", "rewards", "episode_ids", "done"]
+        keys = [
+            "images",
+            "next_images",
+            "gradients",
+            "actions",
+            "rewards",
+            "episode_ids",
+            "done",
+        ]
         for key in keys:
             if step_idx < f[key].shape[0]:
                 f[key].resize(step_idx, axis=0)
@@ -323,9 +303,5 @@ def capture_sac_exact_gradients(
         f.attrs["gradient_names"] = [n.encode() for n in grad_names]
         f.attrs["gradient_shapes"] = [str(test_grads[n].shape) for n in grad_names]
 
-    print(f"\n{'=' * 60}")
-    print("SAC Exact Capture Complete")
-    print(f"{'=' * 60}")
-    print(f"Total steps: {step_idx:,}")
-
+    print(f"\nSAC capture complete. Total steps: {step_idx:,}")
     return step_idx

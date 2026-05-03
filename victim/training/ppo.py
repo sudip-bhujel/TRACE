@@ -34,31 +34,9 @@ def train(
     max_grad_norm: float = 0.5,
     save_dir: str = "ckpts",
     resume_from: str = None,
-    scenes: List[str] = None,  # List of scenes for interleaved training
+    scenes: List[str] = None,
 ) -> List[float]:
-    """
-    Train PPO agent.
-
-    Args:
-        env: AI2THOR environment
-        total_updates: Number of policy updates
-        steps_per_update: Steps to collect before each update
-        mini_batch_size: Minibatch size for PPO updates
-        ppo_epochs: Number of epochs per update
-        gamma: Discount factor
-        lam: GAE lambda
-        clip_eps: PPO clip epsilon
-        lr: Learning rate
-        ent_coef: Entropy coefficient
-        vf_coef: Value loss coefficient
-        max_grad_norm: Max gradient norm for clipping
-        save_dir: Directory to save checkpoints
-        resume_from: Path to checkpoint file to resume training from
-        scenes: List of scenes for interleaved training (shuffles per episode)
-
-    Returns:
-        List of episode rewards
-    """
+    """Train a PPO agent and return per-episode rewards."""
     num_actions = env.action_space_n
 
     model = ActorCritic(in_channels=3, num_actions=num_actions).to(device)
@@ -70,11 +48,9 @@ def train(
     episode_rewards = []
     current_episode_reward = 0.0
 
-    # Per-scene tracking
-    scene_rewards = defaultdict(list)  # scene -> list of episode rewards
+    scene_rewards = defaultdict(list)
     current_scene = scenes[0] if scenes else env.scene
 
-    # Resume from checkpoint if provided
     if resume_from and os.path.exists(resume_from):
         print(f"Resuming from checkpoint: {resume_from}")
         checkpoint = torch.load(resume_from, map_location=device)
@@ -88,11 +64,9 @@ def train(
         )
 
     for update in range(start_update, total_updates + 1):
-        # Collect rollout
         obs_list, actions_list, logp_list = [], [], []
         rewards_list, dones_list, values_list = [], [], []
 
-        # Reset with random scene if multi-scene training
         if scenes and len(scenes) > 1:
             current_scene = random.choice(scenes)
             obs = env.reset(scene=current_scene)
@@ -126,7 +100,6 @@ def train(
                 episode_rewards.append(current_episode_reward)
                 scene_rewards[current_scene].append(current_episode_reward)
                 current_episode_reward = 0.0
-                # Shuffle scene for next episode
                 if scenes and len(scenes) > 1:
                     current_scene = random.choice(scenes)
                     obs = env.reset(scene=current_scene)
@@ -136,31 +109,25 @@ def train(
             else:
                 obs = next_obs
 
-        # Get last value for bootstrapping
         last_obs_tensor = torch.tensor(
             obs, dtype=torch.float32, device=device
         ).unsqueeze(0)
         _, last_val = model(last_obs_tensor)
         values_for_gae = values_list + [last_val.item()]
 
-        # Compute GAE and returns
         advantages, returns = compute_gae(
             rewards_list, values_for_gae, dones_list, gamma=gamma, lam=lam
         )
 
-        # Convert to tensors
         obs_batch = torch.tensor(np.stack(obs_list), dtype=torch.float32, device=device)
         actions_batch = torch.tensor(actions_list, dtype=torch.long, device=device)
         old_logp_batch = torch.tensor(logp_list, dtype=torch.float32, device=device)
         returns_batch = torch.tensor(returns, dtype=torch.float32, device=device)
         adv_batch = torch.tensor(advantages, dtype=torch.float32, device=device)
-
-        # Normalize advantages
         adv_batch = (adv_batch - adv_batch.mean()) / (
             adv_batch.std(unbiased=False) + 1e-8
         )
 
-        # PPO update with minibatches
         n_samples = obs_batch.size(0)
         inds = np.arange(n_samples)
 
@@ -179,19 +146,12 @@ def train(
                 dist = torch.distributions.Categorical(probs)
                 mb_logp = dist.log_prob(mb_actions)
 
-                # PPO clipped objective
                 ratio = torch.exp(mb_logp - mb_old_logp)
                 surr1 = ratio * mb_adv
                 surr2 = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * mb_adv
                 policy_loss = -torch.min(surr1, surr2).mean()
-
-                # Value loss
                 value_loss = F.mse_loss(values, mb_returns)
-
-                # Entropy bonus
                 entropy = dist.entropy().mean()
-
-                # Total loss
                 loss = policy_loss + vf_coef * value_loss - ent_coef * entropy
 
                 optimizer.zero_grad()
@@ -199,7 +159,6 @@ def train(
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
                 optimizer.step()
 
-        # Logging
         if update % 10 == 0:
             avg_reward = np.mean(episode_rewards[-100:]) if episode_rewards else 0.0
             print(
@@ -210,7 +169,6 @@ def train(
                 f"Entropy: {entropy.item():.4f}"
             )
 
-        # Per-scene logging every 50 updates
         if update % 50 == 0 and scenes and len(scenes) > 1:
             print("  Per-scene stats (last 20 episodes):")
             for scene in sorted(scene_rewards.keys()):
@@ -220,7 +178,6 @@ def train(
                     scene_count = len(scene_rewards[scene])
                     print(f"    {scene}: avg={scene_avg:6.3f}, total_eps={scene_count}")
 
-        # Save checkpoint with full metadata
         if update % 100 == 0:
             checkpoint = {
                 "model_state_dict": model.state_dict(),
@@ -246,7 +203,6 @@ def train(
             torch.save(checkpoint, checkpoint_path)
             print(f"Checkpoint saved: {checkpoint_path}")
 
-    # Final save with full metadata
     final_checkpoint = {
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),

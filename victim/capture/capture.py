@@ -8,7 +8,10 @@ from victim.capture.a2c import capture_a2c_gradients
 from victim.capture.federated import capture_federated
 from victim.capture.ppo import capture_ppo_gradients
 from victim.capture.sac import capture_sac_exact_gradients
-from victim.capture.streaming import capture_and_save_streaming, capture_uniform_per_scene
+from victim.capture.streaming import (
+    capture_and_save_streaming,
+    capture_uniform_per_scene,
+)
 from victim.capture.utils import load_model, print_file_info
 from victim.environment import AI2THORNavEnv
 
@@ -29,23 +32,19 @@ if __name__ == "__main__":
     else:
         scenes = ["FloorPlan1"]
 
-    print("=" * 60)
-    print(f"Gradient Capture — {algorithm.upper()} Agent")
-    print("=" * 60)
-    print(f"Algorithm: {algorithm.upper()}")
-    print(f"Scenes: {len(scenes)} scene(s)")
-    print(f"Checkpoint: {model_cfg.get('checkpoint')}")
+    print(
+        f"Gradient Capture | algorithm={algorithm.upper()} | scenes={len(scenes)} | "
+        f"checkpoint={model_cfg.get('checkpoint')}"
+    )
 
     os.makedirs(os.path.dirname(capture_cfg.get("save_path")) or ".", exist_ok=True)
 
-    print(f"\nLoading model from: {model_cfg.get('checkpoint')}")
     model = load_model(
         model_cfg.get("checkpoint"),
         num_actions=model_cfg.get("num_actions", 5),
         algorithm=algorithm,
     )
 
-    print(f"\nInitializing AI2-THOR environment (starting scene={scenes[0]})...")
     env = AI2THORNavEnv(
         scene=scenes[0],
         image_size=(84, 84),
@@ -57,39 +56,26 @@ if __name__ == "__main__":
     steps_per_scene = capture_cfg.get("steps_per_scene", None)
     use_exact_loss = capture_cfg.get("use_exact_loss", False)
 
-    # Common GAE / PPO params (used by PPO and federated modes)
     ppo_params = {
-        "gamma":    capture_cfg.get("gae_gamma", 0.99),
-        "lam":      capture_cfg.get("gae_lambda", 0.95),
+        "gamma": capture_cfg.get("gae_gamma", 0.99),
+        "lam": capture_cfg.get("gae_lambda", 0.95),
         "clip_eps": capture_cfg.get("ppo_clip_eps", 0.2),
-        "vf_coef":  capture_cfg.get("ppo_vf_coef", 0.5),
+        "vf_coef": capture_cfg.get("ppo_vf_coef", 0.5),
         "ent_coef": capture_cfg.get("ppo_ent_coef", 0.01),
     }
-
-    # A2C exact-loss params
     a2c_params = {
-        "gamma":   capture_cfg.get("gae_gamma", 0.99),
-        "lam":     capture_cfg.get("gae_lambda", 0.95),
+        "gamma": capture_cfg.get("gae_gamma", 0.99),
+        "lam": capture_cfg.get("gae_lambda", 0.95),
         "vf_coef": capture_cfg.get("vf_coef", 0.5),
         "ent_coef": capture_cfg.get("ent_coef", 0.01),
     }
-
-    # SAC exact-loss params
     sac_params = {
         "gamma": capture_cfg.get("sac_gamma", 0.99),
         "alpha": capture_cfg.get("sac_alpha", 0.2),
     }
 
     try:
-        # ------------------------------------------------------------------ #
-        # A2C — always uses episode-buffered exact A2C loss                  #
-        # ------------------------------------------------------------------ #
         if algorithm == "a2c":
-            print(
-                f"\n[A2C EXACT MODE] Episode-buffered GAE, "
-                f"gamma={a2c_params['gamma']}, lam={a2c_params['lam']}, "
-                f"vf_coef={a2c_params['vf_coef']}, ent_coef={a2c_params['ent_coef']}"
-            )
             total_steps = capture_a2c_gradients(
                 model=model,
                 env=env,
@@ -102,15 +88,7 @@ if __name__ == "__main__":
                 **a2c_params,
             )
 
-        # ------------------------------------------------------------------ #
-        # SAC — exact loss (critic + actor) when use_exact_loss: true        #
-        # ------------------------------------------------------------------ #
         elif algorithm == "sac" and use_exact_loss:
-            print(
-                f"\n[SAC EXACT MODE] Critic + actor loss, "
-                f"gamma={sac_params['gamma']}, alpha={sac_params['alpha']}"
-            )
-            # Target network = copy of the frozen checkpoint (same weights)
             target_model = copy.deepcopy(model)
             target_model.eval()
             target_model.requires_grad_(False)
@@ -128,11 +106,7 @@ if __name__ == "__main__":
                 **sac_params,
             )
 
-        # ------------------------------------------------------------------ #
-        # Federated mode (all algorithms)                                     #
-        # ------------------------------------------------------------------ #
         elif capture_mode == "federated":
-            print(f"\n[FEDERATED MODE] {algorithm.upper()} — exact training-loss gradients")
             total_steps = capture_federated(
                 model=model,
                 env=env,
@@ -152,11 +126,7 @@ if __name__ == "__main__":
                 alpha=capture_cfg.get("sac_alpha", 0.2),
             )
 
-        # ------------------------------------------------------------------ #
-        # PPO per-step exact mode                                             #
-        # ------------------------------------------------------------------ #
         elif capture_mode == "ppo":
-            print("\n[PPO MODE] Capturing with per-step PPO-style objective...")
             total_steps = capture_ppo_gradients(
                 model=model,
                 env=env,
@@ -168,11 +138,7 @@ if __name__ == "__main__":
                 **ppo_params,
             )
 
-        # ------------------------------------------------------------------ #
-        # Uniform per-scene (probe loss — PPO / SAC without exact loss)      #
-        # ------------------------------------------------------------------ #
         elif steps_per_scene and len(scenes) > 1:
-            print(f"\n[UNIFORM MODE] Capturing {steps_per_scene} steps per scene...")
             total_steps = capture_uniform_per_scene(
                 model=model,
                 env=env,
@@ -184,11 +150,7 @@ if __name__ == "__main__":
                 algorithm=algorithm,
             )
 
-        # ------------------------------------------------------------------ #
-        # Streaming probe mode (fallback)                                     #
-        # ------------------------------------------------------------------ #
         else:
-            print(f"\n[STREAMING MODE] {capture_cfg.get('num_trajectories')} trajectories...")
             total_steps = capture_and_save_streaming(
                 model=model,
                 env=env,

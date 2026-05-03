@@ -39,15 +39,10 @@ if __name__ == "__main__":
     os.makedirs(save_dir, exist_ok=True)
     os.makedirs(os.path.dirname(plot_path) or ".", exist_ok=True)
 
-    print("=" * 60)
-    print(f"Victim {algorithm.upper()} Training Configuration")
-    print("=" * 60)
-    print(f"Scenes: {scenes}")
-    print(f"Headless: {env_cfg.get('headless', False)}")
-    print(f"Save dir: {save_dir}")
-    print("=" * 60)
+    print(
+        f"Victim {algorithm.upper()} training | scenes={scenes} | save_dir={save_dir}"
+    )
 
-    print(f"\nInitializing AI2-THOR environment (starting scene={scenes[0]})...")
     env = AI2THORNavEnv(
         scene=scenes[0],
         image_size=tuple(env_cfg.get("image_size", [84, 84])),

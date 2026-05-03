@@ -6,12 +6,10 @@ import numpy as np
 
 
 def plot_results(returns: List[float], save_path: str = "output/ppo_thor_results.png"):
-    """Plot training results."""
     if not returns:
         print("No episodes completed, skipping plot.")
         return
 
-    # Calculate running average
     running_avg = []
     for i in range(len(returns)):
         start_idx = max(0, i - 99)

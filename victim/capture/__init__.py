@@ -11,7 +11,10 @@ from victim.capture.sac import (
     compute_sac_exact_gradient,
     compute_sac_gradients,
 )
-from victim.capture.streaming import capture_and_save_streaming, capture_uniform_per_scene
+from victim.capture.streaming import (
+    capture_and_save_streaming,
+    capture_uniform_per_scene,
+)
 from victim.capture.utils import (
     create_hdf5_dataset,
     flatten_gradients,

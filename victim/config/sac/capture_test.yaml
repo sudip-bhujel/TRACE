@@ -1,17 +1,11 @@
-# SAC Gradient Capture Configuration — Test Split
-# Usage: python -m victim.capture victim/config/sac/capture_test.yaml
-#
-# NOTE: capture.py must load SAC instead of ActorCritic for this config.
+# SAC gradient capture - test split.
+# Usage: python -m victim.capture.capture victim/config/sac/capture_test.yaml
 
 environment:
   scenes: [
-      # kitchens 28–30
       "FloorPlan28", "FloorPlan29", "FloorPlan30",
-      # living rooms 228–230
       "FloorPlan228", "FloorPlan229", "FloorPlan230",
-      # bedrooms 328–330
       "FloorPlan328", "FloorPlan329", "FloorPlan330",
-      # bathrooms 428–430
       "FloorPlan428", "FloorPlan429", "FloorPlan430",
     ]
   image_size: [84, 84]
@@ -24,11 +18,10 @@ model:
   num_actions: 5
 
 capture:
-  steps_per_scene: 1000        # 1000 steps × 12 scenes = 12,000 total
-  gradient_layers: null        # null = all layers
+  steps_per_scene: 1000
+  gradient_layers: null
   save_path: "trajectory_data/sac/gradients_test.h5"
   compression: "gzip"
-  # Exact SAC loss — critic (Bellman) + actor (entropy-regularised Q)
   use_exact_loss: true
   sac_gamma: 0.99
   sac_alpha: 0.2

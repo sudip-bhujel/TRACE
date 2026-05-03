@@ -7,7 +7,6 @@ import torch.nn.functional as F
 
 from victim.capture.buffers import PPOGradientBuffer
 from victim.capture.utils import (
-    _extract_flat_gradient,
     create_hdf5_dataset,
     flatten_gradients,
 )
@@ -33,13 +32,7 @@ def compute_a2c_gradients(
     gradient_layers: Optional[List[str]] = None,
     use_float16: bool = True,
 ) -> Dict[str, np.ndarray]:
-    """Compute per-step gradients using the exact A2C loss.
-
-    A2C uses a plain REINFORCE policy gradient weighted by the GAE advantage —
-    no importance-sampling ratio and no clipping.
-
-    Loss: -(log π(a|s) * A) + vf_coef * MSE(V, R) - ent_coef * H(π)
-    """
+    """Compute per-step gradients under the exact A2C loss."""
     model.zero_grad()
 
     logits, value = model(observation)
@@ -79,35 +72,10 @@ def capture_a2c_gradients(
     vf_coef: float = 0.5,
     ent_coef: float = 0.01,
 ) -> int:
-    """Capture per-step exact A2C gradients with episode-buffered GAE.
-
-    Collects full episodes (or truncated episodes bootstrapped with the current
-    value), computes GAE advantages at episode end, then writes one exact A2C
-    gradient per step.  Iterates over scenes with a fixed step budget per scene.
-
-    Args:
-        model: Frozen ActorCritic checkpoint.
-        env: AI2-THOR navigation environment.
-        save_path: HDF5 output path.
-        scenes: List of scene names to cycle through.
-        steps_per_scene: Number of steps to capture per scene.
-        max_steps_per_episode: Maximum steps per episode before forced reset.
-        gradient_layers: Filter gradient layers (None = all).
-        compression: HDF5 compression codec.
-        gamma: GAE discount factor.
-        lam: GAE lambda.
-        vf_coef: Value function loss coefficient.
-        ent_coef: Entropy bonus coefficient.
-
-    Returns:
-        Total number of steps written.
-    """
-    # BatchNorm running stats may be poorly estimated at early checkpoints.
-    # Use train mode so BN computes per-batch statistics instead of relying
-    # on inaccurate running stats.  Weights stay frozen (no optimizer step).
+    """Capture per-step exact A2C gradients with episode-buffered GAE."""
+    # Use train mode so BatchNorm uses per-batch statistics; weights stay frozen.
     model.train()
 
-    # Probe gradient size with dummy inputs
     obs = env.reset(scene=scenes[0])
     obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
     adv_t = torch.tensor([1.0], dtype=torch.float32, device=device)
@@ -126,14 +94,11 @@ def capture_a2c_gradients(
     gradient_size = len(flatten_gradients(test_grads))
     total_steps = steps_per_scene * len(scenes)
 
-    print("A2C Gradient Capture (exact loss, episode-buffered GAE)")
-    print(f"  GAE params: gamma={gamma}, lambda={lam}")
-    print(f"  Loss params: vf_coef={vf_coef}, ent_coef={ent_coef}")
+    print("A2C Gradient Capture")
+    print(f"  GAE: gamma={gamma}, lam={lam} | vf_coef={vf_coef}, ent_coef={ent_coef}")
+    print(f"  {steps_per_scene} steps x {len(scenes)} scenes = {total_steps:,} total")
     print(
-        f"  Uniform capture: {steps_per_scene} steps x {len(scenes)} scenes = {total_steps:,} total"
-    )
-    print(
-        f"  Gradient size: {gradient_size:,} values ({gradient_size * 2 / 1024:.1f} KB per step)"
+        f"  Gradient size: {gradient_size:,} ({gradient_size * 2 / 1024:.1f} KB/step)"
     )
 
     create_hdf5_dataset(
@@ -195,7 +160,7 @@ def capture_a2c_gradients(
                         reward=reward,
                         done=done,
                         value=value.item(),
-                        log_prob=log_prob,  # stored but not used in A2C gradient
+                        log_prob=log_prob,
                     )
                     obs = next_obs
                     ep_steps += 1
@@ -203,7 +168,6 @@ def capture_a2c_gradients(
                 if len(a2c_buffer) == 0:
                     continue
 
-                # Bootstrap value for truncated (non-terminal) episodes
                 if done:
                     bootstrap_value = 0.0
                 else:
@@ -283,7 +247,6 @@ def capture_a2c_gradients(
                 f"avg_reward={avg_reward:.2f}"
             )
 
-        # Trim to actual size
         actual_size = step_idx
         for key in ["images", "gradients", "actions", "rewards", "episode_ids", "done"]:
             if actual_size < f[key].shape[0]:
@@ -303,10 +266,5 @@ def capture_a2c_gradients(
         f.attrs["gradient_names"] = [n.encode() for n in grad_names]
         f.attrs["gradient_shapes"] = [str(test_grads[n].shape) for n in grad_names]
 
-    print(f"\n{'=' * 60}")
-    print("A2C Exact Capture Complete")
-    print(f"{'=' * 60}")
-    print(f"Total steps: {step_idx:,}")
-    print(f"Steps per scene: {steps_per_scene}")
-
+    print(f"\nA2C capture complete. Total steps: {step_idx:,}")
     return step_idx

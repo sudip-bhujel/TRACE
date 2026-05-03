@@ -8,7 +8,7 @@ def apply_color_jitter(
     saturation: float = 0.2,
     hue: float = 0.1,
 ) -> np.ndarray:
-    """Apply simple color jitter augmentation to an image."""
+    """Apply random brightness/contrast/saturation/hue jitter to a (C, H, W) uint8 image."""
     img = image.astype(np.float32) / 255.0
     brightness_factor = 1.0 + np.random.uniform(-brightness, brightness)
     img = np.clip(img * brightness_factor, 0, 1)

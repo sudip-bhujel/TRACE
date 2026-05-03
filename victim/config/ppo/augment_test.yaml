@@ -1,4 +1,4 @@
-# PPO Gradient Dataset Augmentation — Test Split
+# PPO gradient dataset augmentation - test split.
 # Usage: python -m victim.augment.augment victim/config/ppo/augment_test.yaml
 
 algorithm: ppo

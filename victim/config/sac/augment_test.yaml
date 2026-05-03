@@ -1,9 +1,5 @@
-# SAC Gradient Dataset Augmentation — Test Split
+# SAC gradient dataset augmentation - test split.
 # Usage: python -m victim.augment.augment victim/config/sac/augment_test.yaml
-#
-# Uses exact SAC loss (critic + actor) when the input HDF5 was captured with
-# capture_sac_exact_gradients (contains next_images).  Falls back to probe
-# loss automatically if next_images is absent.
 
 algorithm: sac
 

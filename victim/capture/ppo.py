@@ -6,7 +6,11 @@ import torch
 import torch.nn.functional as F
 
 from victim.capture.buffers import PPOGradientBuffer
-from victim.capture.utils import _extract_flat_gradient, create_hdf5_dataset, flatten_gradients
+from victim.capture.utils import (
+    _extract_flat_gradient,
+    create_hdf5_dataset,
+    flatten_gradients,
+)
 from victim.environment import AI2THORNavEnv
 from victim.models.actor_critic import ActorCritic
 
@@ -25,7 +29,7 @@ def compute_gradients(
     gradient_layers: Optional[List[str]] = None,
     use_float16: bool = True,
 ) -> Dict[str, np.ndarray]:
-    """Compute gradients for the simple probe loss."""
+    """Probe-loss gradient: -log pi(a|s) + 0.5 * V(s)."""
     model.zero_grad()
 
     logits, value = model(observation)
@@ -33,10 +37,7 @@ def compute_gradients(
     dist = torch.distributions.Categorical(probs)
 
     log_prob = dist.log_prob(torch.tensor([action], device=device))
-    policy_loss = -log_prob.mean()
-    value_loss = value.mean()
-    loss = policy_loss + 0.5 * value_loss
-
+    loss = -log_prob.mean() + 0.5 * value.mean()
     loss.backward()
 
     gradients = {}
@@ -65,7 +66,7 @@ def compute_ppo_gradients(
     gradient_layers: Optional[List[str]] = None,
     use_float16: bool = True,
 ) -> Dict[str, np.ndarray]:
-    """Compute gradients using the PPO-style loss used in capture mode."""
+    """Per-step gradient under the PPO clipped surrogate loss."""
     model.zero_grad()
 
     logits, value = model(observation)
@@ -79,9 +80,7 @@ def compute_ppo_gradients(
     policy_loss = -torch.min(surr1, surr2).mean()
     value_loss = F.mse_loss(value, returns)
     entropy = dist.entropy().mean()
-    loss = policy_loss + vf_coef * value_loss - ent_coef * entropy
-
-    loss.backward()
+    (policy_loss + vf_coef * value_loss - ent_coef * entropy).backward()
 
     gradients = {}
     dtype = np.float16 if use_float16 else np.float32
@@ -98,17 +97,17 @@ def compute_ppo_gradients(
 
 def _client_gradient_ppo(
     model: ActorCritic,
-    obs: torch.Tensor,            # (T, C, H, W)
-    actions: torch.Tensor,        # (T,)  long
-    old_log_probs: torch.Tensor,  # (T,)
-    advantages: torch.Tensor,     # (T,)
-    returns: torch.Tensor,        # (T,)
+    obs: torch.Tensor,
+    actions: torch.Tensor,
+    old_log_probs: torch.Tensor,
+    advantages: torch.Tensor,
+    returns: torch.Tensor,
     clip_eps: float = 0.2,
     vf_coef: float = 0.5,
     ent_coef: float = 0.01,
     gradient_layers: Optional[List[str]] = None,
 ) -> np.ndarray:
-    """Exact PPO loss gradient over one local rollout — identical to train.py."""
+    """Exact PPO loss gradient over a local rollout."""
     model.zero_grad()
     logits, values = model(obs)
     probs = F.softmax(logits, dim=-1)
@@ -135,11 +134,7 @@ def _client_gradient_a2c(
     ent_coef: float = 0.01,
     gradient_layers: Optional[List[str]] = None,
 ) -> np.ndarray:
-    """Exact A2C loss gradient over one local rollout — identical to train_a2c().
-
-    Same rollout data as PPO but uses the plain REINFORCE gradient weighted
-    by GAE advantage, with no importance-sampling ratio or clipping.
-    """
+    """Exact A2C loss gradient over a local rollout."""
     model.zero_grad()
     logits, values = model(obs)
     probs = F.softmax(logits, dim=-1)
@@ -168,13 +163,7 @@ def capture_ppo_gradients(
     vf_coef: float = 0.5,
     ent_coef: float = 0.01,
 ) -> int:
-    """
-    Capture per-step gradients using a PPO-style objective.
-
-    This is PPO-style per-step capture from a frozen checkpoint, not a client-level
-    federated update. The ratio is near 1.0 on the original observations because the
-    same checkpoint provides both old_log_prob and new_logp.
-    """
+    """Capture per-step PPO gradients from a frozen checkpoint."""
     obs = env.reset()
     obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
     action_tensor = torch.tensor(0, dtype=torch.long, device=device)
@@ -193,13 +182,14 @@ def capture_ppo_gradients(
     gradient_size = len(flatten_gradients(test_grads))
     estimated_steps = num_trajectories * (max_steps // 2)
 
-    print("PPO Gradient Capture (per-step, frozen checkpoint)")
-    print(f"  PPO params: clip_eps={clip_eps}, vf_coef={vf_coef}, ent_coef={ent_coef}")
-    print(f"  GAE params: gamma={gamma}, lambda={lam}")
+    print("PPO Gradient Capture (per-step)")
     print(
-        f"Gradient size: {gradient_size:,} values ({gradient_size * 2 / 1024:.1f} KB per step)"
+        f"  clip_eps={clip_eps}, vf_coef={vf_coef}, ent_coef={ent_coef}, gamma={gamma}, lam={lam}"
     )
-    print(f"Estimated total steps: ~{estimated_steps:,}")
+    print(
+        f"  Gradient size: {gradient_size:,} ({gradient_size * 2 / 1024:.1f} KB/step)"
+    )
+    print(f"  Estimated total steps: ~{estimated_steps:,}")
 
     create_hdf5_dataset(
         save_path,
@@ -323,10 +313,10 @@ def capture_ppo_gradients(
                 step_idx += 1
 
             ppo_buffer.clear()
-            success = "✓" if info.get("distance", float("inf")) < 1.0 else "✗"
+            success = "ok" if info.get("distance", float("inf")) < 1.0 else "miss"
             episode_rewards.append(ep_reward)
             print(
-                f"Trajectory {traj_idx + 1:4d}/{num_trajectories} | Steps: {ep_steps:3d} | Reward: {ep_reward:7.2f} | Success: {success} | Total: {step_idx:,} steps"
+                f"Trajectory {traj_idx + 1:4d}/{num_trajectories} | Steps: {ep_steps:3d} | Reward: {ep_reward:7.2f} | {success} | Total: {step_idx:,}"
             )
 
         for key in ["images", "gradients", "actions", "rewards", "episode_ids", "done"]:

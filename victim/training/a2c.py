@@ -32,34 +32,7 @@ def train_a2c(
     resume_from: str = None,
     scenes: List[str] = None,
 ) -> List[float]:
-    """Train Advantage Actor-Critic (A2C) agent.
-
-    A2C is the synchronous, deterministic variant of A3C.  It differs from
-    PPO in two key ways:
-      - No importance-sampling ratio or clipping: the policy gradient is the
-        plain REINFORCE update weighted by the GAE advantage.
-      - Single gradient update per rollout (no epoch loop / minibatching).
-
-    Loss:
-        L = -mean(log π(a|s) * A) + vf_coef * MSE(V, R) - ent_coef * H(π)
-
-    Args:
-        env: AI2THOR environment.
-        total_updates: Number of rollout→update cycles.
-        steps_per_update: Steps collected per rollout.
-        gamma: Discount factor.
-        lam: GAE λ.
-        lr: Adam learning rate.
-        ent_coef: Entropy bonus coefficient.
-        vf_coef: Value loss coefficient.
-        max_grad_norm: Gradient clipping norm.
-        save_dir: Checkpoint directory.
-        resume_from: Optional checkpoint path.
-        scenes: Scene pool for multi-scene training.
-
-    Returns:
-        List of episode rewards.
-    """
+    """Train an A2C agent (REINFORCE + GAE, no clipping) and return per-episode rewards."""
     num_actions = env.action_space_n
     model = A2C(in_channels=3, num_actions=num_actions).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -118,7 +91,6 @@ def train_a2c(
             else:
                 obs = next_obs
 
-        # Bootstrap last value
         obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
         with torch.no_grad():
             _, last_val = model(obs_t)
@@ -127,13 +99,14 @@ def train_a2c(
             rew_list, val_list + [last_val.item()], done_list, gamma=gamma, lam=lam
         )
 
-        obs_b = torch.tensor(np.ascontiguousarray(np.stack(obs_list)), dtype=torch.float32, device=device)
+        obs_b = torch.tensor(
+            np.ascontiguousarray(np.stack(obs_list)), dtype=torch.float32, device=device
+        )
         act_b = torch.tensor(act_list, dtype=torch.long, device=device)
         adv_b = torch.tensor(advantages, dtype=torch.float32, device=device)
         ret_b = torch.tensor(returns, dtype=torch.float32, device=device)
         adv_b = (adv_b - adv_b.mean()) / (adv_b.std(unbiased=False) + 1e-8)
 
-        # Single A2C update over the full rollout
         logits, values = model(obs_b)
         dist = torch.distributions.Categorical(F.softmax(logits, dim=-1))
         log_probs = dist.log_prob(act_b)
@@ -169,8 +142,12 @@ def train_a2c(
             print(f"Checkpoint saved: {path}")
 
     torch.save(
-        {"model_state_dict": model.state_dict(), "update": total_updates,
-         "global_step": global_step, "episode_rewards": episode_rewards},
+        {
+            "model_state_dict": model.state_dict(),
+            "update": total_updates,
+            "global_step": global_step,
+            "episode_rewards": episode_rewards,
+        },
         os.path.join(save_dir, "a2c_ai2thor_final.pt"),
     )
     print("A2C training finished, model saved.")

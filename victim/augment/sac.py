@@ -25,28 +25,7 @@ def augment_sac(
     jitter_kwargs: dict,
     batch_size: int = 100,
 ) -> int:
-    """Augment a SAC dataset using the SAC probe loss.
-
-    SAC augmentation always uses the probe loss (actor entropy-regularised Q
-    maximisation) rather than an exact training loss.  The SAC exact loss
-    requires ``next_obs`` and a target network, neither of which is available
-    in the per-step HDF5 schema.
-
-    Colour-jitter is applied per step and the gradient is recomputed from the
-    augmented observation only — no episode context is needed.
-
-    Args:
-        f_in: Open input HDF5 file.
-        f_out: Open output HDF5 file (datasets already created and originals copied).
-        model: Frozen SAC checkpoint.
-        out_idx: Write cursor — index of the first augmented slot in f_out.
-        num_augmentations: Number of colour-jitter copies per original step.
-        jitter_kwargs: kwargs forwarded to apply_color_jitter.
-        batch_size: Number of samples to load from HDF5 at once.
-
-    Returns:
-        Updated out_idx after all augmented samples are written.
-    """
+    """Augment a SAC dataset using the SAC probe loss (no next_obs needed)."""
     num_original = f_in["images"].shape[0]
 
     for aug_num in range(num_augmentations):
@@ -73,7 +52,9 @@ def augment_sac(
                 f_out["gradients"][out_idx] = flat_grads.astype(np.float16)
                 f_out["actions"][out_idx] = batch_actions[i]
                 f_out["rewards"][out_idx] = batch_rewards[i]
-                f_out["episode_ids"][out_idx] = batch_episode_ids[i] + (aug_num + 1) * 100_000
+                f_out["episode_ids"][out_idx] = (
+                    batch_episode_ids[i] + (aug_num + 1) * 100_000
+                )
                 f_out["done"][out_idx] = batch_done[i]
                 out_idx += 1
 
@@ -92,28 +73,7 @@ def augment_sac_exact(
     alpha: float = 0.2,
     batch_size: int = 100,
 ) -> int:
-    """Augment a SAC dataset using the exact SAC training loss.
-
-    Requires ``next_images`` in the input HDF5 (written by
-    ``capture_sac_exact_gradients``).  Colour-jitter is applied to both
-    ``images`` and ``next_images`` and the exact critic + actor gradient is
-    recomputed for each augmented transition.
-
-    Args:
-        f_in: Open input HDF5 file (must contain ``next_images``).
-        f_out: Open output HDF5 file (datasets already created and originals copied).
-        model: Frozen SAC checkpoint (online network).
-        target_model: Target SAC network (typically same weights; no_grad).
-        out_idx: Write cursor — index of the first augmented slot in f_out.
-        num_augmentations: Number of colour-jitter copies per original step.
-        jitter_kwargs: kwargs forwarded to apply_color_jitter.
-        gamma: SAC discount factor.
-        alpha: SAC entropy regularisation coefficient.
-        batch_size: Number of samples to load from HDF5 at once.
-
-    Returns:
-        Updated out_idx after all augmented samples are written.
-    """
+    """Augment a SAC dataset using the exact SAC loss; requires next_images in f_in."""
     num_original = f_in["images"].shape[0]
 
     for aug_num in range(num_augmentations):
@@ -131,7 +91,9 @@ def augment_sac_exact(
 
             for i in range(batch_len):
                 aug_image = apply_color_jitter(batch_images[i], **jitter_kwargs)
-                aug_next_image = apply_color_jitter(batch_next_images[i], **jitter_kwargs)
+                aug_next_image = apply_color_jitter(
+                    batch_next_images[i], **jitter_kwargs
+                )
 
                 obs_t = torch.tensor(
                     aug_image, dtype=torch.float32, device=device
@@ -158,7 +120,9 @@ def augment_sac_exact(
                 f_out["gradients"][out_idx] = flat_grads.astype(np.float16)
                 f_out["actions"][out_idx] = batch_actions[i]
                 f_out["rewards"][out_idx] = batch_rewards[i]
-                f_out["episode_ids"][out_idx] = batch_episode_ids[i] + (aug_num + 1) * 100_000
+                f_out["episode_ids"][out_idx] = (
+                    batch_episode_ids[i] + (aug_num + 1) * 100_000
+                )
                 f_out["done"][out_idx] = batch_done[i]
                 out_idx += 1
 

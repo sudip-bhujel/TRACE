@@ -1,5 +1,5 @@
-# PPO Gradient Dataset Augmentation — Train Split
-# Usage: python -m victim.augment.augment victim/config/ppo/augment.yaml
+# PPO gradient dataset augmentation - train split.
+# Usage: python -m victim.augment.augment victim/config/ppo/augment_train.yaml
 
 algorithm: ppo
 

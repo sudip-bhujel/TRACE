@@ -21,12 +21,11 @@ else:
 def _sample_action(
     model: torch.nn.Module, obs_tensor: torch.Tensor, algorithm: str
 ) -> int:
-    """Sample an action from the model (handles all three algorithms)."""
     with torch.no_grad():
         if algorithm in ("ppo", "a2c"):
             logits, _ = model(obs_tensor)
             probs = F.softmax(logits, dim=-1)
-        else:  # sac
+        else:
             _, probs = model.actor(obs_tensor)
     return torch.distributions.Categorical(probs=probs).sample().item()
 
@@ -38,11 +37,9 @@ def _compute_probe_gradients(
     algorithm: str,
     gradient_layers: Optional[List[str]] = None,
 ) -> Dict[str, np.ndarray]:
-    """Dispatch to the correct probe-loss gradient function."""
     if algorithm == "sac":
         return compute_sac_gradients(model, obs_tensor, gradient_layers)
-    else:  # ppo, a2c
-        return compute_gradients(model, obs_tensor, action, gradient_layers)
+    return compute_gradients(model, obs_tensor, action, gradient_layers)
 
 
 def capture_and_save_streaming(
@@ -56,19 +53,19 @@ def capture_and_save_streaming(
     scenes: Optional[List[str]] = None,
     algorithm: str = "ppo",
 ) -> int:
-    """Capture trajectories using the probe loss for the given algorithm."""
+    """Capture trajectories using the algorithm-specific probe loss."""
     obs = env.reset()
     obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-    test_grads = _compute_probe_gradients(model, obs_tensor, 0, algorithm, gradient_layers)
+    test_grads = _compute_probe_gradients(
+        model, obs_tensor, 0, algorithm, gradient_layers
+    )
     gradient_size = len(flatten_gradients(test_grads))
     estimated_steps = num_trajectories * (max_steps // 2)
 
     print(
-        f"Gradient size: {gradient_size:,} values ({gradient_size * 2 / 1024:.1f} KB per step as float16)"
+        f"Gradient size: {gradient_size:,} ({gradient_size * 2 / 1024:.1f} KB/step) | "
+        f"Estimated total steps: ~{estimated_steps:,}"
     )
-    print(f"Estimated total steps: ~{estimated_steps:,}")
-    if scenes and len(scenes) > 1:
-        print(f"Shuffling across {len(scenes)} scenes: {scenes}")
 
     create_hdf5_dataset(
         save_path,
@@ -128,10 +125,10 @@ def capture_and_save_streaming(
                 step_idx += 1
                 ep_steps += 1
 
-            success = "✓" if info.get("distance", float("inf")) < 1.0 else "✗"
+            success = "ok" if info.get("distance", float("inf")) < 1.0 else "miss"
             episode_rewards.append(ep_reward)
             print(
-                f"Trajectory {traj_idx + 1:4d}/{num_trajectories} | Steps: {ep_steps:3d} | Reward: {ep_reward:7.2f} | Success: {success} | Total: {step_idx:,} steps"
+                f"Trajectory {traj_idx + 1:4d}/{num_trajectories} | Steps: {ep_steps:3d} | Reward: {ep_reward:7.2f} | {success} | Total: {step_idx:,}"
             )
 
         for key in ["images", "gradients", "actions", "rewards", "episode_ids", "done"]:
@@ -162,18 +159,18 @@ def capture_uniform_per_scene(
     compression: str = "gzip",
     algorithm: str = "ppo",
 ) -> int:
-    """Capture a fixed number of steps from each scene for uniform distribution."""
+    """Capture a fixed number of probe-loss steps per scene."""
     obs = env.reset(scene=scenes[0])
     obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-    test_grads = _compute_probe_gradients(model, obs_tensor, 0, algorithm, gradient_layers)
+    test_grads = _compute_probe_gradients(
+        model, obs_tensor, 0, algorithm, gradient_layers
+    )
     gradient_size = len(flatten_gradients(test_grads))
     total_steps = steps_per_scene * len(scenes)
 
     print(
-        f"Uniform capture mode: {steps_per_scene} steps x {len(scenes)} scenes = {total_steps:,} total steps"
-    )
-    print(
-        f"Gradient size: {gradient_size:,} values ({gradient_size * 2 / 1024:.1f} KB per step)"
+        f"Uniform: {steps_per_scene} steps x {len(scenes)} scenes = {total_steps:,} total | "
+        f"Gradient size: {gradient_size:,} ({gradient_size * 2 / 1024:.1f} KB/step)"
     )
 
     create_hdf5_dataset(
@@ -261,15 +258,5 @@ def capture_uniform_per_scene(
         f.attrs["gradient_names"] = [n.encode() for n in grad_names]
         f.attrs["gradient_shapes"] = [str(test_grads[n].shape) for n in grad_names]
 
-    print(f"\n{'=' * 60}")
-    print("Uniform Capture Complete")
-    print(f"{'=' * 60}")
-    print(f"Total steps: {step_idx:,}")
-    print(f"Steps per scene: {steps_per_scene}")
-    print("Scene distribution:")
-    for scene in scenes:
-        print(
-            f"  {scene}: {scene_stats[scene]['steps']} steps, {scene_stats[scene]['episodes']} eps"
-        )
-
+    print(f"\nUniform capture complete. Total steps: {step_idx:,}")
     return step_idx

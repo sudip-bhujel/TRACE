@@ -6,7 +6,7 @@ from victim.models.actor_critic import compute_gae
 
 
 class PPOGradientBuffer:
-    """Buffer episode data needed to compute PPO-style per-step gradients."""
+    """Stores per-step rollout data needed to compute GAE-based per-step gradients."""
 
     def __init__(
         self,
@@ -36,15 +36,13 @@ class PPOGradientBuffer:
     def compute_gae_and_returns(
         self, next_value: float = 0.0
     ) -> Tuple[List[float], List[float]]:
-        """Compute GAE advantages and returns with explicit bootstrap value."""
         if len(self.dones) == 0:
             return [], []
         bootstrap = 0.0 if self.dones[-1] else next_value
         values_for_gae = self.values + [bootstrap]
-        advantages, returns = compute_gae(
+        return compute_gae(
             self.rewards, values_for_gae, self.dones, gamma=self.gamma, lam=self.lam
         )
-        return advantages, returns
 
     def clear(self) -> None:
         self.obs_list: List[np.ndarray] = []

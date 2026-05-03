@@ -1,7 +1,5 @@
-# A2C Gradient Dataset Augmentation — Train Split
-# Usage: python -m victim.augment.augment victim/config/a2c/augment.yaml
-#
-# Uses the exact A2C loss (REINFORCE + GAE, no importance-sampling clipping).
+# A2C gradient dataset augmentation - train split.
+# Usage: python -m victim.augment.augment victim/config/a2c/augment_train.yaml
 
 algorithm: a2c
 
@@ -27,4 +25,3 @@ loss:
   lam:      0.95
   vf_coef:  0.5
   ent_coef: 0.01
-  # clip_eps is not used by A2C

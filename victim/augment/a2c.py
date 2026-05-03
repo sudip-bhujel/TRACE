@@ -28,20 +28,16 @@ def _compute_a2c_gradient_from_targets(
     vf_coef: float = 0.5,
     ent_coef: float = 0.01,
 ) -> np.ndarray:
-    """Compute exact A2C gradient from precomputed episode-level GAE targets.
-
-    Unlike PPO, A2C uses a plain REINFORCE policy gradient weighted by the
-    GAE advantage — no importance-sampling ratio and no clipping.  There is
-    also no ``old_log_prob`` argument because the ratio is always 1.
-
-    Loss: -(log π(a|s) * A) + vf_coef * MSE(V, R) - ent_coef * H(π)
-    """
     model.zero_grad()
 
     obs_tensor = torch.tensor(image, dtype=torch.float32, device=device).unsqueeze(0)
     action_tensor = torch.tensor(action, dtype=torch.long, device=device)
-    advantage_tensor = torch.tensor(advantage, dtype=torch.float32, device=device).unsqueeze(0)
-    return_tensor = torch.tensor(returns, dtype=torch.float32, device=device).unsqueeze(0)
+    advantage_tensor = torch.tensor(
+        advantage, dtype=torch.float32, device=device
+    ).unsqueeze(0)
+    return_tensor = torch.tensor(returns, dtype=torch.float32, device=device).unsqueeze(
+        0
+    )
 
     logits, value = model(obs_tensor)
     probs = F.softmax(logits, dim=-1)
@@ -68,29 +64,10 @@ def augment_a2c(
     vf_coef: float = 0.5,
     ent_coef: float = 0.01,
 ) -> int:
-    """Augment an A2C dataset using the exact A2C loss with episode-buffered GAE targets.
-
-    Structurally identical to ``augment_ppo`` but uses the plain REINFORCE
-    gradient (no clipping, no ``old_log_prob``).  The same PPOGradientBuffer
-    is reused because A2C also needs per-step values for GAE.
-
-    Args:
-        f_in: Open input HDF5 file.
-        f_out: Open output HDF5 file (datasets already created and originals copied).
-        model: Frozen ActorCritic checkpoint.
-        out_idx: Write cursor — index of the first augmented slot in f_out.
-        num_augmentations: Number of colour-jitter copies per original step.
-        jitter_kwargs: kwargs forwarded to apply_color_jitter.
-        gamma, lam: GAE discount and lambda.
-        vf_coef, ent_coef: A2C loss coefficients.
-
-    Returns:
-        Updated out_idx after all augmented samples are written.
-    """
+    """Augment an A2C dataset using exact A2C loss with episode-buffered GAE targets."""
     num_original = f_in["images"].shape[0]
 
-    # --- Pass 1: collect episode buffers ---
-    print("\n[A2C] Collecting episode data for GAE computation...")
+    print("\n[A2C] Collecting episode data for GAE...")
     episode_buffers: Dict[int, PPOGradientBuffer] = {}
 
     for i in tqdm(range(num_original), desc="Collecting episodes"):
@@ -103,7 +80,9 @@ def augment_a2c(
         if sample_ep_id not in episode_buffers:
             episode_buffers[sample_ep_id] = PPOGradientBuffer(gamma=gamma, lam=lam)
 
-        obs_tensor = torch.tensor(sample_obs, dtype=torch.float32, device=device).unsqueeze(0)
+        obs_tensor = torch.tensor(
+            sample_obs, dtype=torch.float32, device=device
+        ).unsqueeze(0)
         with torch.no_grad():
             logits, value = model(obs_tensor)
             probs = F.softmax(logits, dim=-1)
@@ -117,12 +96,11 @@ def augment_a2c(
             reward=sample_reward,
             done=sample_done,
             value=value.item(),
-            log_prob=log_prob,  # stored in buffer but not used by A2C gradient
+            log_prob=log_prob,
         )
 
     print(f"  Collected {len(episode_buffers)} episodes")
 
-    # --- Pass 2: augment ---
     for aug_num in range(num_augmentations):
         print(f"\n[Augmentation {aug_num + 1}/{num_augmentations}]")
         for ep_id, ep_buf in tqdm(episode_buffers.items(), desc="Augmenting episodes"):
