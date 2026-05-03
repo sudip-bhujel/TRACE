@@ -1,10 +1,4 @@
-"""
-DLG (Zhu et al., NeurIPS 2019):
-   Optimization-based gradient matching using L2 distance. Jointly optimizes
-   a dummy image AND dummy label via L-BFGS (Algorithm 1 from the paper).
-
-Based on: https://github.com/mit-han-lab/dlg
-"""
+"""DLG baseline (Zhu et al., 2019): joint L-BFGS optimisation of image and label."""
 
 from typing import Optional, Tuple
 
@@ -21,9 +15,7 @@ from attacker.baselines.common import (
 
 
 class DLGBaseline:
-    """
-    DLG — Deep Leakage from Gradients (Zhu et al., NeurIPS 2019).
-    """
+    """Deep Leakage from Gradients (Zhu et al., 2019)."""
 
     def __init__(
         self,
@@ -54,7 +46,6 @@ class DLGBaseline:
     def _run_once(
         self, observed_gradient: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, float]:
-        """Single optimisation run matching the official DLG code."""
         device = observed_gradient.device
         observed_gradient = observed_gradient.detach()
 
@@ -63,10 +54,8 @@ class DLGBaseline:
         ).requires_grad_(True)
         y_hat = torch.randn(1, self.num_actions, device=device).requires_grad_(True)
 
-        # Match official: torch.optim.LBFGS([dummy_data, dummy_label])
         opt = torch.optim.LBFGS([x_hat, y_hat], lr=self.lr)
 
-        # Unflatten the observed gradient into per-parameter tensors
         sorted_names, sorted_params, param_dict = _sorted_param_info(self.victim_model)
         original_grads = _unflatten_gradient(
             observed_gradient, sorted_names, param_dict, self.gradient_dim
@@ -82,7 +71,6 @@ class DLGBaseline:
                 opt.zero_grad()
                 self.victim_model.zero_grad()
 
-                # Forward pass with soft label (cross_entropy_for_onehot)
                 x_input = x_hat * 255.0
                 logits, value = self.victim_model(x_input)
                 dummy_onehot = F.softmax(y_hat, dim=-1)
@@ -97,7 +85,6 @@ class DLGBaseline:
                     dummy_loss, sorted_params, create_graph=True
                 )
 
-                # Per-parameter L2 matching (matches official code exactly)
                 grad_diff = torch.zeros((), device=device)
                 for dg, og in zip(dummy_grads, original_grads):
                     grad_diff = grad_diff + ((dg - og) ** 2).sum()
@@ -105,8 +92,6 @@ class DLGBaseline:
                 return grad_diff
 
             loss = opt.step(closure)
-
-            # NO clamping — matching the official DLG implementation
 
             cur = loss.item() if isinstance(loss, torch.Tensor) else loss
             if cur < best_loss:
@@ -119,12 +104,7 @@ class DLGBaseline:
     def reconstruct_single(
         self, observed_gradient: torch.Tensor
     ) -> Tuple[torch.Tensor, int]:
-        """
-        Reconstruct one image and recover the action.
-
-        Runs ``num_restarts`` independent optimisations from different random
-        initialisations and keeps the result with the lowest matching loss.
-        """
+        """Reconstruct one image; runs ``num_restarts`` and keeps the lowest-loss result."""
         best_loss = float("inf")
         best_x: Optional[torch.Tensor] = None
         best_y: Optional[torch.Tensor] = None
@@ -145,15 +125,7 @@ class DLGBaseline:
         gradients: torch.Tensor,
         show_progress: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Reconstruct images from a batch of gradient sequences.
-
-        Args:
-            gradients: (B, T, gradient_dim)
-        Returns:
-            images:  (B, T, 3, H, W)
-            actions: (B, T, num_actions) — logits (10.0 at recovered action)
-        """
+        """Reconstruct images and actions for a batch of gradient sequences."""
         B, T, _ = gradients.shape
         all_images = []
         all_actions = []

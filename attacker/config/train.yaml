@@ -8,7 +8,7 @@ data:
   gradient_dim: 936102
 
 model:
-  model_type: autoregressive # Use autoregressive architecture
+  model_type: autoregressive
   sequence_length: 8
   latent_dim: 1024
   stride: 2
@@ -26,20 +26,16 @@ training:
   weight_decay: 1e-5
   num_workers: 4
 
-  # Learning rate schedule
   lr_schedule: cosine
   warmup_epochs: 5
   min_lr: 1e-6
 
-  # Regularization
   gradient_noise_scale: 0.0
 
-  # Scheduled sampling (anneals from start→end after warmup epochs)
   scheduled_sampling_start: 0.0
   scheduled_sampling_end: 0.5
   scheduled_sampling_warmup: 5
 
-  # Short rollout loss
   rollout_steps: 2
   rollout_weight: 0.3
 

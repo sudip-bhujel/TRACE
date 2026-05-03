@@ -1,18 +1,4 @@
-"""
-Temporal Baseline Models for Gradient Inversion.
-
-Drop-in alternatives to ``TemporalTransformer`` for ablation studies.
-All models share the same interface:
-
-    forward(x: Tensor, **kw) -> Tensor
-
-where ``x`` is ``(B, T, latent_dim)`` and the output has the same shape.
-
-Available baselines:
-    - TemporalGRU: Bidirectional GRU
-    - TemporalConv1D: Causal 1-D dilated convolution stack
-    - TemporalMLPMixer: Token-mixing MLP (no attention)
-"""
+"""Drop-in alternatives to ``TemporalTransformer`` for ablations: GRU, Conv1D, MLP-Mixer."""
 
 import torch
 import torch.nn as nn
@@ -20,11 +6,7 @@ import torch.nn.functional as F
 
 
 class TemporalGRU(nn.Module):
-    """Bidirectional GRU over the latent time-series.
-
-    Projects the concatenated forward/backward hidden states back to
-    ``latent_dim`` so the decoder interface stays unchanged.
-    """
+    """Bidirectional GRU; concatenated hidden states are projected to ``latent_dim``."""
 
     def __init__(
         self,
@@ -46,15 +28,14 @@ class TemporalGRU(nn.Module):
         self.norm = nn.LayerNorm(latent_dim)
 
     def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
-        """(B, T, D) -> (B, T, D)."""
         residual = x
-        h, _ = self.gru(x)  # (B, T, 2*D)
-        out = self.out_proj(h)  # (B, T, D)
+        h, _ = self.gru(x)
+        out = self.out_proj(h)
         return self.norm(residual + out)
 
 
 class CausalConv1dBlock(nn.Module):
-    """Single causal conv1d block with pre-norm and gated residual."""
+    """Causal conv1d block with pre-norm and gated residual."""
 
     def __init__(
         self,
@@ -70,24 +51,19 @@ class CausalConv1dBlock(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """(B, T, C) -> (B, T, C)."""
         residual = x
         h = self.norm(x)
-        h = h.transpose(1, 2)  # (B, C, T)
-        h = F.pad(h, (self.padding, 0))  # causal pad
-        h = self.conv(h)  # (B, 2*C, T)
+        h = h.transpose(1, 2)
+        h = F.pad(h, (self.padding, 0))
+        h = self.conv(h)
         gate, val = h.chunk(2, dim=1)
         h = val * torch.sigmoid(gate)
-        h = h.transpose(1, 2)  # (B, T, C)
+        h = h.transpose(1, 2)
         return residual + self.dropout(h)
 
 
 class TemporalConv1D(nn.Module):
-    """Causal 1-D dilated convolution stack.
-
-    Uses exponentially increasing dilation ``(1, 2, 4, ...)`` so the
-    receptive field grows efficiently.
-    """
+    """Causal 1-D convolution stack with exponentially increasing dilation."""
 
     def __init__(
         self,
@@ -112,14 +88,13 @@ class TemporalConv1D(nn.Module):
         self.norm = nn.LayerNorm(latent_dim)
 
     def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
-        """(B, T, D) -> (B, T, D)."""
         for layer in self.layers:
             x = layer(x)
         return self.norm(x)
 
 
 class MixerBlock(nn.Module):
-    """Single MLP-Mixer block with token-mixing and channel-mixing."""
+    """MLP-Mixer block with token-mixing and channel-mixing MLPs."""
 
     def __init__(
         self,
@@ -130,7 +105,6 @@ class MixerBlock(nn.Module):
         dropout: float = 0.1,
     ):
         super().__init__()
-        # Token-mixing MLP (operates across the time axis)
         self.norm1 = nn.LayerNorm(latent_dim)
         self.token_mix = nn.Sequential(
             nn.Linear(seq_len, seq_len * token_expansion),
@@ -140,7 +114,6 @@ class MixerBlock(nn.Module):
             nn.Dropout(dropout),
         )
 
-        # Channel-mixing MLP (operates across the feature axis)
         self.norm2 = nn.LayerNorm(latent_dim)
         self.channel_mix = nn.Sequential(
             nn.Linear(latent_dim, latent_dim * channel_expansion),
@@ -151,20 +124,14 @@ class MixerBlock(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """(B, T, D) -> (B, T, D)."""
-        h = self.norm1(x).transpose(1, 2)  # (B, D, T)
-        x = x + self.token_mix(h).transpose(1, 2)  # (B, T, D)
-
+        h = self.norm1(x).transpose(1, 2)
+        x = x + self.token_mix(h).transpose(1, 2)
         x = x + self.channel_mix(self.norm2(x))
         return x
 
 
 class TemporalMLPMixer(nn.Module):
-    """MLP-Mixer for temporal modelling (no attention).
-
-    Note: ``seq_len`` must match the actual sequence length at runtime
-    because the token-mixing MLP has a fixed time-axis width.
-    """
+    """MLP-Mixer with a fixed-width token-mixing MLP; sequences are padded/truncated to ``max_seq_len``."""
 
     def __init__(
         self,
@@ -189,7 +156,6 @@ class TemporalMLPMixer(nn.Module):
         self.norm = nn.LayerNorm(latent_dim)
 
     def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
-        """(B, T, D) -> (B, T, D).  T must equal self.seq_len."""
         B, T, D = x.shape
         if T != self.seq_len:
             if T < self.seq_len:
@@ -215,15 +181,7 @@ def get_temporal_model(
     is_causal: bool = True,
     use_rope: bool = False,
 ) -> nn.Module:
-    """Factory function to create a temporal model by type.
-
-    Args:
-        temporal_model_type: One of ``"transformer"``, ``"gru"``,
-            ``"conv1d"``, ``"mlp_mixer"``.
-
-    Returns:
-        Temporal model module.
-    """
+    """Construct a temporal model by name. Supported: transformer, gru, conv1d, mlp_mixer."""
     if temporal_model_type == "transformer":
         from attacker.models.transformer import TemporalTransformer
 

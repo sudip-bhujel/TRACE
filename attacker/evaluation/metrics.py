@@ -1,13 +1,4 @@
-"""
-Evaluation metrics for temporal gradient inversion.
-
-Computes PSNR, SSIM, MS-SSIM, LPIPS, and FID for image reconstruction
-quality, along with action prediction accuracy and confusion matrix.
-
-This module is the single source of truth for metric keys, display
-formats, and column ordering used by both ``attacker.evaluate`` and
-``defense.evaluate``.
-"""
+"""Reconstruction-quality and action-prediction metrics: PSNR, SSIM, MS-SSIM, LPIPS, FID, accuracy."""
 
 import csv
 import json
@@ -21,8 +12,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy.linalg import sqrtm
-
-# ---- Canonical metric definitions (single source of truth) ----
 
 METRIC_KEYS: List[str] = [
     "mse",
@@ -44,7 +33,6 @@ METRIC_FORMATS: Dict[str, Tuple[str, str]] = {
     "fid": (".2f", ""),
     "action_accuracy": (".1f", "%"),
 }
-"""Mapping from metric key to ``(format_spec, unit_suffix)``."""
 
 METRIC_LABELS: Dict[str, str] = {
     "mse": "MSE",
@@ -55,17 +43,12 @@ METRIC_LABELS: Dict[str, str] = {
     "fid": "FID",
     "action_accuracy": "Action Accuracy",
 }
-"""Short human-readable label for each metric."""
 
 
 def format_metric(results: Dict[str, float], key: str, include_std: bool = True) -> str:
-    """
-    Format a single metric value with optional ``+/- std``.
-
-    Returns ``"N/A"`` when the value is missing or NaN.
-    """
+    """Format a metric value with optional ``+/- std``; returns ``"N/A"`` if missing or NaN."""
     val = results.get(key)
-    if val is None or (isinstance(val, float) and (val != val)):  # NaN check
+    if val is None or (isinstance(val, float) and (val != val)):
         return "N/A"
     fmt, unit = METRIC_FORMATS.get(key, (".4f", ""))
     s = format(val, fmt)
@@ -94,7 +77,6 @@ def print_per_timestep_results(per_timestep: Dict[str, Dict[int, float]]):
     timesteps = sorted(next(iter(per_timestep.values())).keys())
     metrics = list(per_timestep.keys())
 
-    # Header
     header = f"  {'t':<4}" + "".join(f"{m.upper():<12}" for m in metrics)
     print(header)
     print("  " + "-" * (len(header) - 2))
@@ -109,16 +91,7 @@ def print_per_timestep_results(per_timestep: Dict[str, Dict[int, float]]):
 
 
 def compute_psnr(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """
-    Per-image PSNR between predicted and target images.
-
-    Args:
-        pred: (N, C, H, W) in [0, 1]
-        target: (N, C, H, W) in [0, 1]
-
-    Returns:
-        (N,) PSNR values in dB.
-    """
+    """Per-image PSNR in dB; expects inputs in [0, 1]."""
     mse = F.mse_loss(pred, target, reduction="none").mean(dim=(1, 2, 3))
     return 10.0 * torch.log10(1.0 / mse.clamp(min=1e-10))
 
@@ -140,16 +113,7 @@ def compute_ssim(
     window_size: int = 11,
     sigma: float = 1.5,
 ) -> torch.Tensor:
-    """
-    Per-image SSIM using Gaussian-weighted statistics (Wang et al. 2004).
-
-    Args:
-        pred: (N, C, H, W) in [0, 1]
-        target: (N, C, H, W) in [0, 1]
-
-    Returns:
-        (N,) SSIM values.
-    """
+    """Per-image SSIM with Gaussian-weighted statistics (Wang et al., 2004)."""
     C1 = 0.01**2
     C2 = 0.03**2
     channels = pred.shape[1]
@@ -188,12 +152,7 @@ def _ssim_components(
     channels: int,
     pad: int,
 ) -> tuple:
-    """
-    Compute the luminance, contrast-structure, and full SSIM maps.
-
-    Returns:
-        (luminance, cs, ssim_map) each of shape (N, C, H', W').
-    """
+    """Return (luminance, contrast-structure, ssim_map)."""
     C1 = 0.01**2
     C2 = 0.03**2
 
@@ -228,23 +187,7 @@ def compute_ms_ssim(
     sigma: float = 1.5,
     weights: Optional[List[float]] = None,
 ) -> torch.Tensor:
-    """
-    Multi-Scale SSIM (Wang et al. 2003).
-
-    Computes SSIM contrast-structure at multiple downsampled scales and
-    combines them with the luminance term at the coarsest scale.
-
-    Args:
-        pred: (N, C, H, W) in [0, 1]
-        target: (N, C, H, W) in [0, 1]
-        window_size: Gaussian window size.
-        sigma: Gaussian standard deviation.
-        weights: Per-scale weights.  Defaults to the 5-level weights from
-            the original paper: [0.0448, 0.2856, 0.3001, 0.2363, 0.1333].
-
-    Returns:
-        (N,) MS-SSIM values.
-    """
+    """Multi-Scale SSIM (Wang et al., 2003)."""
     if weights is None:
         weights = [0.0448, 0.2856, 0.3001, 0.2363, 0.1333]
 
@@ -259,7 +202,6 @@ def compute_ms_ssim(
     luminance_final = None
 
     for i in range(levels):
-        # Images must be large enough for the Gaussian window
         if pred.shape[2] < window_size or pred.shape[3] < window_size:
             break
 
@@ -274,14 +216,12 @@ def compute_ms_ssim(
             pred = F.avg_pool2d(pred, kernel_size=2)
             target = F.avg_pool2d(target, kernel_size=2)
 
-    # If the image was too small for all levels, fall back to single-scale
     if luminance_final is None:
         lum, cs, _ = _ssim_components(pred, target, kernel, channels, pad)
         luminance_final = lum.mean(dim=(1, 2, 3)).clamp(min=1e-10)
         if not cs_per_level:
             cs_per_level.append(cs.mean(dim=(1, 2, 3)).clamp(min=1e-10))
 
-    # Trim weights to actual number of computed levels
     actual_levels = len(cs_per_level)
     w = weights[:actual_levels]
     w_sum = sum(w)
@@ -297,25 +237,12 @@ def compute_ms_ssim(
 def compute_fid(
     real_features: np.ndarray, fake_features: np.ndarray, eps: float = 1e-6
 ) -> float:
-    """
-    Fréchet Inception Distance between two feature distributions.
-
-    Args:
-        real_features: (N, D) features from real images.
-        fake_features: (M, D) features from generated images.
-        eps: Small constant added to covariance diagonals for numerical
-            stability of the matrix square root.
-
-    Returns:
-        FID score (lower is better).
-    """
+    """Frechet Inception Distance between two feature distributions."""
     mu_r = real_features.mean(axis=0)
     mu_f = fake_features.mean(axis=0)
     sigma_r = np.cov(real_features, rowvar=False)
     sigma_f = np.cov(fake_features, rowvar=False)
 
-    # Regularise covariance matrices for numerical stability (especially
-    # important when the number of samples is smaller than the feature dim).
     sigma_r += np.eye(sigma_r.shape[0]) * eps
     sigma_f += np.eye(sigma_f.shape[0]) * eps
 
@@ -334,9 +261,8 @@ def compute_fid(
 
 
 class InceptionFeatureExtractor(nn.Module):
-    """Extract 2048-dim pool features from InceptionV3 for FID computation."""
+    """InceptionV3 pool-feature extractor for FID."""
 
-    # ImageNet statistics expected by InceptionV3
     _MEAN = [0.485, 0.456, 0.406]
     _STD = [0.229, 0.224, 0.225]
 
@@ -359,33 +285,13 @@ class InceptionFeatureExtractor(nn.Module):
 
     @torch.no_grad()
     def __call__(self, images: torch.Tensor) -> np.ndarray:
-        """
-        Args:
-            images: (N, 3, H, W) in [0, 1]
-
-        Returns:
-            (N, 2048) numpy feature array.
-        """
         x = F.interpolate(images, size=(299, 299), mode="bilinear", align_corners=False)
         x = (x - self.mean) / self.std
         return self.model(x).cpu().numpy()
 
 
 class MetricsComputer:
-    """
-    Accumulates image reconstruction and action prediction metrics
-    across batches, then computes aggregate statistics.
-
-    Supported metrics: MSE, PSNR, SSIM, LPIPS, FID, action accuracy.
-
-    Usage::
-
-        mc = MetricsComputer(device, compute_fid=True)
-        for pred, target, pred_act, tgt_act in loader:
-            mc.update(pred, target, pred_act, tgt_act)
-        results = mc.compute()
-        mc.save(Path("metrics.json"))
-    """
+    """Accumulates per-batch reconstruction metrics and aggregates them."""
 
     def __init__(self, device: torch.device, compute_fid_flag: bool = True):
         self.device = device
@@ -406,7 +312,6 @@ class MetricsComputer:
         self.lpips_values: List[float] = []
         self.mse_values: List[float] = []
 
-        # Per-timestep tracking (keyed by timestep index)
         self.psnr_per_timestep: Dict[int, List[float]] = defaultdict(list)
         self.ssim_per_timestep: Dict[int, List[float]] = defaultdict(list)
         self.lpips_per_timestep: Dict[int, List[float]] = defaultdict(list)
@@ -422,15 +327,6 @@ class MetricsComputer:
         pred_actions: torch.Tensor,
         target_actions: torch.Tensor,
     ):
-        """
-        Accumulate metrics for one batch.
-
-        Args:
-            pred_images: (B, T, 3, H, W) or (N, 3, H, W)
-            target_images: same shape as pred_images
-            pred_actions: (B, T, num_actions) or (N, num_actions) logits
-            target_actions: (B, T) or (N,) integer labels
-        """
         has_time_dim = pred_images.ndim == 5
         if has_time_dim:
             B, T = pred_images.shape[:2]
@@ -443,20 +339,18 @@ class MetricsComputer:
         pred_flat = pred_flat.clamp(0, 1).to(self.device)
         tgt_flat = tgt_flat.to(self.device)
 
-        # MSE & PSNR (per-image)
         mse = F.mse_loss(pred_flat, tgt_flat, reduction="none").mean(dim=(1, 2, 3))
         psnr = 10.0 * torch.log10(1.0 / mse.clamp(min=1e-10))
         self.mse_values.extend(mse.cpu().tolist())
         self.psnr_values.extend(psnr.cpu().tolist())
 
-        # SSIM & MS-SSIM (per-image)
         ssim_vals = compute_ssim(pred_flat, tgt_flat)
         self.ssim_values.extend(ssim_vals.cpu().tolist())
 
         ms_ssim_vals = compute_ms_ssim(pred_flat, tgt_flat)
         self.ms_ssim_values.extend(ms_ssim_vals.cpu().tolist())
 
-        # LPIPS (per-image; expects [-1, 1] input)
+        # LPIPS expects inputs in [-1, 1].
         lp = self.lpips_fn(pred_flat * 2 - 1, tgt_flat * 2 - 1)
         if lp.numel() > 1:
             lp_list = lp.squeeze().cpu().tolist()
@@ -464,7 +358,6 @@ class MetricsComputer:
             lp_list = [lp.item()]
         self.lpips_values.extend(lp_list)
 
-        # Per-timestep tracking
         if has_time_dim:
             psnr_2d = psnr.reshape(B, T)
             ssim_2d = ssim_vals.reshape(B, T)
@@ -474,12 +367,10 @@ class MetricsComputer:
                 self.ssim_per_timestep[t].extend(ssim_2d[:, t].cpu().tolist())
                 self.lpips_per_timestep[t].extend(lp_tensor[:, t].tolist())
 
-        # FID features
         if self._compute_fid:
             self.real_features.append(self.inception(tgt_flat))
             self.fake_features.append(self.inception(pred_flat))
 
-        # Actions
         if pred_actions.ndim == 3:
             pred_labels = pred_actions.argmax(dim=-1).reshape(-1)
             tgt_labels = target_actions.reshape(-1)
@@ -490,22 +381,21 @@ class MetricsComputer:
         self.all_target_actions.append(tgt_labels.cpu())
 
     def compute(self) -> Dict[str, float]:
-        """Return aggregate metrics with mean and standard deviation."""
         results: Dict[str, float] = {}
         n = len(self.mse_values)
 
-        results["mse"] = float(np.mean(self.mse_values)) if n else 0.0
-        results["psnr"] = float(np.mean(self.psnr_values)) if n else 0.0
-        results["ssim"] = float(np.mean(self.ssim_values)) if n else 0.0
-        results["ms_ssim"] = float(np.mean(self.ms_ssim_values)) if n else 0.0
-        results["lpips"] = float(np.mean(self.lpips_values)) if n else 0.0
+        results["mse"] = float(np.nanmean(self.mse_values)) if n else 0.0
+        results["psnr"] = float(np.nanmean(self.psnr_values)) if n else 0.0
+        results["ssim"] = float(np.nanmean(self.ssim_values)) if n else 0.0
+        results["ms_ssim"] = float(np.nanmean(self.ms_ssim_values)) if n else 0.0
+        results["lpips"] = float(np.nanmean(self.lpips_values)) if n else 0.0
 
         if n >= 2:
-            results["mse_std"] = float(np.std(self.mse_values, ddof=1))
-            results["psnr_std"] = float(np.std(self.psnr_values, ddof=1))
-            results["ssim_std"] = float(np.std(self.ssim_values, ddof=1))
-            results["ms_ssim_std"] = float(np.std(self.ms_ssim_values, ddof=1))
-            results["lpips_std"] = float(np.std(self.lpips_values, ddof=1))
+            results["mse_std"] = float(np.nanstd(self.mse_values, ddof=1))
+            results["psnr_std"] = float(np.nanstd(self.psnr_values, ddof=1))
+            results["ssim_std"] = float(np.nanstd(self.ssim_values, ddof=1))
+            results["ms_ssim_std"] = float(np.nanstd(self.ms_ssim_values, ddof=1))
+            results["lpips_std"] = float(np.nanstd(self.lpips_values, ddof=1))
 
         if self._compute_fid and self.real_features:
             real = np.concatenate(self.real_features, axis=0)
@@ -543,7 +433,7 @@ class MetricsComputer:
             for t in sorted(storage.keys()):
                 vals = storage[t]
                 if vals:
-                    per_t[t] = float(np.mean(vals))
+                    per_t[t] = float(np.nanmean(vals))
             if per_t:
                 results[metric_name] = per_t
         return results
@@ -558,11 +448,7 @@ class MetricsComputer:
         return cm
 
     def save(self, path: Path):
-        """Save aggregate metrics to both JSON and CSV.
-
-        Writes ``<path>`` as JSON and ``<path>.csv`` (same stem) as CSV.
-        Includes per-timestep metrics when temporal data is available.
-        """
+        """Write aggregate metrics to ``<path>`` (JSON) and ``<path>.csv`` (same stem)."""
         results = self.compute()
         clean = {
             k: (None if (isinstance(v, float) and np.isnan(v)) else v)
@@ -578,11 +464,9 @@ class MetricsComputer:
 
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        # JSON
         with open(path, "w") as f:
             json.dump(clean, f, indent=2)
 
-        # CSV (same directory, same stem) — aggregate only
         csv_path = path.with_suffix(".csv")
         csv_clean = {k: v for k, v in clean.items() if k != "per_timestep"}
         with open(csv_path, "w", newline="") as f:

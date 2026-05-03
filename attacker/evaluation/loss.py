@@ -10,13 +10,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class TemporalCombinedLoss(nn.Module):
-    """
-    Combined loss for temporal gradient inversion.
-
-    Computes per-frame losses and averages over the sequence.
-    Optionally includes temporal smoothness loss, latent temporal
-    consistency loss, and VQ token prediction loss.
-    """
+    """Combined per-frame loss: MSE + L1 + action + optional LPIPS / temporal terms."""
 
     def __init__(
         self,
@@ -40,13 +34,10 @@ class TemporalCombinedLoss(nn.Module):
         self.l1_loss = nn.L1Loss()
         self.ce_loss = nn.CrossEntropyLoss()
 
-        # LPIPS loss (only create if weight > 0)
         if lpips_weight > 0:
             self.lpips_loss = lpips.LPIPS(net=lpips_net).to(device)
-            # CRITICAL: The LPIPS VGG uses ReLU(inplace=True) which corrupts
-            # the autograd graph of upstream modules (e.g. decoder BatchNorm)
-            # when their outputs are passed through LPIPS.  Replace all
-            # inplace ReLUs with non-inplace variants.
+            # LPIPS VGG uses ReLU(inplace=True), which corrupts the autograd graph of
+            # upstream BatchNorm layers. Disable inplace before any forward pass.
             for module in self.lpips_loss.modules():
                 if isinstance(module, nn.ReLU):
                     module.inplace = False
@@ -55,18 +46,16 @@ class TemporalCombinedLoss(nn.Module):
 
     def forward(
         self,
-        pred_images: torch.Tensor,  # (B, T, 3, H, W)
-        target_images: torch.Tensor,  # (B, T, 3, H, W)
-        pred_actions: torch.Tensor,  # (B, T, num_actions)
-        target_actions: torch.Tensor,  # (B, T)
-        latents: Optional[torch.Tensor] = None,  # (B, T, latent_dim)
-        token_logits: Optional[torch.Tensor] = None,  # (B*T, num_tokens, codebook_size)
-        target_tokens: Optional[torch.Tensor] = None,  # (B*T, num_tokens)
+        pred_images: torch.Tensor,
+        target_images: torch.Tensor,
+        pred_actions: torch.Tensor,
+        target_actions: torch.Tensor,
+        latents: Optional[torch.Tensor] = None,
+        token_logits: Optional[torch.Tensor] = None,
+        target_tokens: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """Compute combined loss."""
         B, T = pred_images.shape[:2]
 
-        # Flatten for loss computation
         pred_img_flat = pred_images.reshape(-1, *pred_images.shape[2:])
         target_img_flat = target_images.reshape(-1, *target_images.shape[2:])
         pred_act_flat = pred_actions.reshape(-1, pred_actions.shape[-1])
@@ -75,15 +64,13 @@ class TemporalCombinedLoss(nn.Module):
         mse = self.mse_loss(pred_img_flat, target_img_flat)
         l1 = self.l1_loss(pred_img_flat, target_img_flat)
         action_loss = self.ce_loss(pred_act_flat, target_act_flat)
-        action_loss = torch.clamp(action_loss, max=2.0)  # prevent explosion
+        action_loss = torch.clamp(action_loss, max=2.0)
 
-        # LPIPS loss (VGG features)
         if self.lpips_loss is not None:
             lpips_val = self.lpips_loss(pred_img_flat, target_img_flat).mean()
         else:
             lpips_val = torch.tensor(0.0, device=pred_images.device)
 
-        # Temporal smoothness (penalize large changes between consecutive frames)
         if self.temporal_weight > 0 and T > 1:
             pred_diff = pred_images[:, 1:] - pred_images[:, :-1]
             gt_diff = target_images[:, 1:] - target_images[:, :-1]
@@ -97,7 +84,6 @@ class TemporalCombinedLoss(nn.Module):
         else:
             latent_temporal_loss = torch.tensor(0.0, device=pred_images.device)
 
-        # Total loss
         total = (
             self.mse_weight * mse
             + self.l1_weight * l1

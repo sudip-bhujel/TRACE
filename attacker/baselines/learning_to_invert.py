@@ -4,16 +4,20 @@ Learning to Invert (Wu et al., UAI 2023):
     Adapted from the original CIFAR10/LeNet setting to our embodied RL
     setting (PPO gradients, 84x84 images, 5-action discrete space).
 
-Training:
+Training (single GPU):
     uv run -m attacker.baselines.learning_to_invert attacker/config/lti_train.yaml
+
+Training (multi-GPU DDP):
+    torchrun --standalone --nproc_per_node=NUM_GPUS \
+        -m attacker.baselines.learning_to_invert attacker/config/lti_train.yaml
 
 Based on: https://github.com/wrh14/Learning_to_Invert
 """
 
 import math
+import os
 import sys
 import time
-from copy import deepcopy
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -23,7 +27,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import OmegaConf
+from torch.distributed import destroy_process_group, init_process_group
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
 import wandb
@@ -194,31 +201,51 @@ class LearningToInvertModel(nn.Module):
 
 
 def train_lti(cfg_path: str):
-    """Train the Learning-to-Invert baseline from a YAML config."""
+    """
+    Train the Learning-to-Invert baseline from a YAML config.
+
+    Supports DDP (Distributed Data Parallel) training when launched with torchrun:
+        torchrun --standalone --nproc_per_node=2 \
+            -m attacker.baselines.learning_to_invert <config_path>
+    """
 
     cfg = OmegaConf.load(cfg_path)
-    print(f"Loaded config from {cfg_path}")
 
     data_cfg = cfg.get("data", {})
     model_cfg = cfg.get("model", {})
     train_cfg = cfg.get("training", {})
     output_cfg = cfg.get("output", {})
 
-    device_str = cfg.get("device", "auto")
-    if device_str == "auto":
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        elif torch.backends.mps.is_available():
-            device = torch.device("mps")
-        else:
-            device = torch.device("cpu")
+    ddp = int(os.environ.get("RANK", -1)) != -1
+    if ddp:
+        init_process_group(backend="nccl")
+        ddp_rank = int(os.environ["RANK"])
+        ddp_local_rank = int(os.environ["LOCAL_RANK"])
+        ddp_world_size = int(os.environ["WORLD_SIZE"])
+        device = torch.device(f"cuda:{ddp_local_rank}")
+        torch.cuda.set_device(device)
+        master_process = ddp_rank == 0
     else:
-        device = torch.device(device_str)
-    print(f"Using device: {device}")
+        master_process = True
+        ddp_world_size = 1
+        device_str = cfg.get("device", "auto")
+        if device_str == "auto":
+            if torch.cuda.is_available():
+                device = torch.device("cuda")
+            elif torch.backends.mps.is_available():
+                device = torch.device("mps")
+            else:
+                device = torch.device("cpu")
+        else:
+            device = torch.device(device_str)
+
+    if master_process:
+        print(f"Loaded config from {cfg_path}")
+        print(f"Using device: {device}")
+        if ddp:
+            print(f"DDP enabled: world_size={ddp_world_size}")
 
     gradient_dim = data_cfg.get("gradient_dim", 936102)
-
-    # Build model
     model = LearningToInvertModel(
         gradient_dim=gradient_dim,
         hidden_size=model_cfg.get("hidden_size", 3000),
@@ -228,11 +255,15 @@ def train_lti(cfg_path: str):
         seed=model_cfg.get("seed", 0),
     ).to(device)
 
-    num_params = sum(p.numel() for p in model.parameters())
-    print(f"Model parameters: {num_params:,}")
+    if ddp:
+        model = DDP(model, device_ids=[ddp_local_rank])
+    raw_model = model.module if ddp else model
 
-    # Build datasets — pass selected_para for on-the-fly compression
-    selected_para = model.selected_para.cpu()
+    num_params = sum(p.numel() for p in model.parameters())
+    if master_process:
+        print(f"Model parameters: {num_params:,}")
+
+    selected_para = raw_model.selected_para.cpu()
     train_dataset = FlatGradientImageDataset(
         data_cfg["train_h5_path"],
         selected_para=selected_para,
@@ -246,10 +277,15 @@ def train_lti(cfg_path: str):
 
     batch_size = train_cfg.get("batch_size", 256)
     num_workers = train_cfg.get("num_workers", 4)
+
+    train_sampler = DistributedSampler(train_dataset, shuffle=True) if ddp else None
+    test_sampler = DistributedSampler(test_dataset, shuffle=False) if ddp else None
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
         num_workers=num_workers,
         pin_memory=True,
     )
@@ -257,11 +293,11 @@ def train_lti(cfg_path: str):
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
+        sampler=test_sampler,
         num_workers=num_workers,
         pin_memory=True,
     )
 
-    # Optimizer
     lr = train_cfg.get("learning_rate", 1e-4)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     action_weight = train_cfg.get("action_weight", 0.01)
@@ -271,11 +307,11 @@ def train_lti(cfg_path: str):
     lr_decay_factor = train_cfg.get("lr_decay_factor", 0.1)
 
     save_dir = Path(output_cfg.get("save_dir", "ckpts/baselines/lti"))
-    save_dir.mkdir(parents=True, exist_ok=True)
+    if master_process:
+        save_dir.mkdir(parents=True, exist_ok=True)
 
-    # Wandb (optional)
     wandb_cfg = cfg.get("wandb", {})
-    use_wandb = wandb_cfg.get("enabled", False)
+    use_wandb = wandb_cfg.get("enabled", False) and master_process
     if use_wandb:
         wandb.init(
             project=wandb_cfg.get("project", "gradient-inversion"),
@@ -290,14 +326,20 @@ def train_lti(cfg_path: str):
     best_state_dict = None
 
     for epoch in range(num_epochs):
-        # --- Train ---
+        if ddp and train_sampler is not None:
+            train_sampler.set_epoch(epoch)
+
         model.train()
         train_loss_sum = 0.0
         train_count = 0
 
-        for grads, images, actions in tqdm(
-            train_loader, desc=f"Epoch {epoch + 1}/{num_epochs} [train]", leave=False
-        ):
+        pbar = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch + 1}/{num_epochs} [train]",
+            leave=False,
+            disable=not master_process,
+        )
+        for grads, images, actions in pbar:
             grads = grads.to(device)
             images = images.to(device)
             actions = actions.to(device)
@@ -317,13 +359,12 @@ def train_lti(cfg_path: str):
 
         train_loss = train_loss_sum / train_count
 
-        # --- LR decay ---
         if epoch + 1 == lr_decay_epoch:
             for g in optimizer.param_groups:
                 g["lr"] *= lr_decay_factor
-            print(f"  LR decayed by {lr_decay_factor} at epoch {epoch + 1}")
+            if master_process:
+                print(f"  LR decayed by {lr_decay_factor} at epoch {epoch + 1}")
 
-        # --- Eval ---
         model.eval()
         test_loss_sum = 0.0
         test_count = 0
@@ -331,7 +372,10 @@ def train_lti(cfg_path: str):
 
         with torch.no_grad():
             for grads, images, actions in tqdm(
-                test_loader, desc=f"Epoch {epoch + 1}/{num_epochs} [test]", leave=False
+                test_loader,
+                desc=f"Epoch {epoch + 1}/{num_epochs} [test]",
+                leave=False,
+                disable=not master_process,
             ):
                 grads = grads.to(device)
                 images = images.to(device)
@@ -349,16 +393,16 @@ def train_lti(cfg_path: str):
         test_loss = test_loss_sum / test_count
         test_acc = 100.0 * correct / test_count
 
-        # Compute test PSNR from MSE
         test_psnr = -10.0 * math.log10(max(test_loss, 1e-10))
 
-        print(
-            f"Epoch {epoch + 1:3d}/{num_epochs} | "
-            f"Train loss: {train_loss:.6f} | "
-            f"Test loss: {test_loss:.6f} | "
-            f"Test PSNR: {test_psnr:.2f} dB | "
-            f"Test Acc: {test_acc:.1f}%"
-        )
+        if master_process:
+            print(
+                f"Epoch {epoch + 1:3d}/{num_epochs} | "
+                f"Train loss: {train_loss:.6f} | "
+                f"Test loss: {test_loss:.6f} | "
+                f"Test PSNR: {test_psnr:.2f} dB | "
+                f"Test Acc: {test_acc:.1f}%"
+            )
 
         if use_wandb:
             wandb.log(
@@ -372,13 +416,10 @@ def train_lti(cfg_path: str):
                 step=epoch + 1,
             )
 
-        # Track best
-        if test_loss < best_test_loss:
+        if test_loss < best_test_loss and master_process:
             best_test_loss = test_loss
-            best_state_dict = deepcopy(model.cpu().state_dict())
-            model.to(device)
+            best_state_dict = {k: v.cpu().clone() for k, v in raw_model.state_dict().items()}
 
-            # Save best checkpoint
             torch.save(
                 {
                     "epoch": epoch + 1,
@@ -392,12 +433,11 @@ def train_lti(cfg_path: str):
                 save_dir / "best_model.pt",
             )
 
-        # Periodic checkpoint
-        if (epoch + 1) % 50 == 0 or epoch + 1 == num_epochs:
+        if master_process and ((epoch + 1) % 50 == 0 or epoch + 1 == num_epochs):
             torch.save(
                 {
                     "epoch": epoch + 1,
-                    "model_state_dict": model.state_dict(),
+                    "model_state_dict": raw_model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "train_loss": train_loss,
                     "val_loss": {"total": test_loss},
@@ -405,11 +445,15 @@ def train_lti(cfg_path: str):
                 save_dir / f"epoch_{epoch + 1:04d}.pt",
             )
 
-    print(f"\nTraining complete. Best test loss: {best_test_loss:.6f}")
-    print(f"Checkpoints saved to: {save_dir}")
+    if master_process:
+        print(f"\nTraining complete. Best test loss: {best_test_loss:.6f}")
+        print(f"Checkpoints saved to: {save_dir}")
 
     if use_wandb:
         wandb.finish()
+
+    if ddp:
+        destroy_process_group()
 
 
 if __name__ == "__main__":

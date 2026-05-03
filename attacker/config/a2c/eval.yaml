@@ -1,10 +1,7 @@
-# Autoregressive Gradient Inversion Evaluation Configuration
-# Usage: uv run -m attacker.evaluation.evaluate ./attacker/config/eval.yaml
-
 device: auto
 
 data:
-  h5_path: trajectory_data/ppo/gradients_test.h5
+  h5_path: trajectory_data/a2c/gradients_test.h5
   gradient_dim: 936102
 
 model:
@@ -12,6 +9,7 @@ model:
   sequence_length: 8
   stride: 2
   latent_dim: 1024
+  encoder_hidden_dim: 2048
   num_transformer_layers: 6
   num_heads: 8
   encoder_type: residual
@@ -19,10 +17,10 @@ model:
   use_flash_attention: true
 
 eval:
-  checkpoint: ckpts/autoregressive/no_temp/ablation/t8/best_model.pt
+  checkpoint: ckpts/trace/a2c/base/best_model.pt
   num_sequences: 100
   enable_fid: true
   teacher_forcing: true
 
 output:
-  save_dir: eval_results/autoregressive/no_temp/t8-tf-true
+  save_dir: ckpts/trace/a2c/base/eval_results

@@ -28,14 +28,14 @@ eval:
   enable_fid: false
 
 dlg:
-  num_iterations: 300 # matching official mit-han-lab/dlg
+  num_iterations: 300
   lr: 1.0
   num_restarts: 1
 
 ig:
-  num_iterations: 4800 # matching official JonasGeiping/invertinggradients DEFAULT_CONFIG
+  num_iterations: 4800
   lr: 0.1
-  tv_weight: 1e-1 # matching official default
+  tv_weight: 1e-1
   num_restarts: 1
   signed: false
 

@@ -11,13 +11,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class TemporalGradientInversion(nn.Module):
-    """
-    Full temporal gradient inversion model.
-
-    Takes a sequence of gradients and produces a sequence of images,
-    using a pluggable temporal model (Transformer, GRU, Conv1D, or
-    MLP-Mixer) for temporal modeling.
-    """
+    """Encodes a gradient sequence and decodes it to a sequence of images and actions."""
 
     def __init__(
         self,
@@ -46,7 +40,6 @@ class TemporalGradientInversion(nn.Module):
 
         self.skip_transformer = skip_transformer
 
-        # Use factory function to get encoder
         encoder_kwargs = {}
         if encoder_type == "basic" and encoder_hidden_dims is not None:
             encoder_kwargs["hidden_dims"] = encoder_hidden_dims
@@ -79,7 +72,6 @@ class TemporalGradientInversion(nn.Module):
                 use_rope=use_rope,
             )
 
-        # Use factory function to get decoder
         self.image_decoder = get_decoder(
             decoder_type=decoder_type,
             latent_dim=latent_dim,
@@ -91,27 +83,13 @@ class TemporalGradientInversion(nn.Module):
     def forward(
         self, gradients: torch.Tensor, use_flash_attention: bool = True
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        """
-        Args:
-            gradients: (B, T, gradient_dim)
-            use_flash_attention: If False, disables Flash kernels in transformer SDPA.
-        Returns:
-            images: (B, T, 3, H, W)
-            actions: (B, T, num_actions)
-            latents: (B, T, latent_dim)
-            token_logits: None (reserved for backward compatibility)
-        """
-        # Encode each gradient
-        latents = self.gradient_encoder(gradients)  # (B, T, latent_dim)
+        latents = self.gradient_encoder(gradients)
 
-        # Apply temporal model unless skipped
         if not self.skip_transformer:
             latents = self.temporal_model(
                 latents, use_flash_attention=use_flash_attention
-            )  # (B, T, latent_dim)
+            )
 
-        # Decode to images and actions.
-        # Keep a compatibility branch for older checkpoint formats.
         output = self.image_decoder(latents)
 
         if len(output) == 3:

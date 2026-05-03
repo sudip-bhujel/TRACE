@@ -34,10 +34,10 @@ training:
   gradient_noise_scale: 0.0
 
   scheduled_sampling_start: 0.0
-  scheduled_sampling_end: 0.0  # no-op: T=1 has no image context to sample
+  scheduled_sampling_end: 0.0 
   scheduled_sampling_warmup: 5
 
-  rollout_steps: 0              # nothing to roll out with T=1
+  rollout_steps: 0             
   rollout_weight: 0.0
 
 loss:

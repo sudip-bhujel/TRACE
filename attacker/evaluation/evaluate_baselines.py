@@ -1,19 +1,4 @@
-"""
-Baseline Evaluation Script for Gradient Inversion
-
-Evaluates baseline methods and the full autoregressive model:
-  1. DLG (Zhu et al., 2019) — optimization-based, L2 gradient matching
-  2. IG  (Geiping et al., 2020) — cosine similarity + TV regularization
-  3. LtI (Wu et al., UAI 2023) — learning-based MLP gradient-to-image
-  4. SingleFrame — learned encoder+decoder without temporal transformer
-  5. Base (Ours) — full autoregressive gradient inversion model
-
-All methods are evaluated on the same test data with the same metrics
-(MSE, PSNR, SSIM, LPIPS, FID, action accuracy).
-
-Usage:
-    uv run -m attacker.evaluate_baselines attacker/config/eval_baselines.yaml
-"""
+"""Evaluate gradient inversion baselines (DLG, IG, LtI, SingleFrame) and the full model."""
 
 import csv
 import json
@@ -69,6 +54,7 @@ def load_single_frame_model(
     latent_dim: int = 512,
     encoder_type: str = "residual",
     decoder_type: str = "residual",
+    encoder_hidden_dim: Optional[int] = None,
 ) -> nn.Module:
     """Load a trained SingleFrameInversion model."""
     model = SingleFrameInversion(
@@ -77,6 +63,7 @@ def load_single_frame_model(
         num_actions=num_actions,
         encoder_type=encoder_type,
         decoder_type=decoder_type,
+        encoder_hidden_dim=encoder_hidden_dim,
     ).to(device)
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -86,9 +73,7 @@ def load_single_frame_model(
         else checkpoint
     )
 
-    # The checkpoint may come from the full autoregressive model, which has
-    # extra modules (start_token, image_encoder, type_embedding, temporal_model).
-    # Filter to only keys present in the SingleFrameInversion model.
+    # Checkpoint may originate from the full autoregressive model; keep only matching keys.
     model_keys = set(model.state_dict().keys())
     filtered = {k: v for k, v in state_dict.items() if k in model_keys}
     skipped = set(state_dict.keys()) - model_keys
@@ -148,6 +133,7 @@ def load_base_model(
     device: torch.device,
     num_actions: int = 5,
     latent_dim: int = 1024,
+    encoder_hidden_dim: Optional[int] = None,
     encoder_type: str = "residual",
     decoder_type: str = "residual",
     num_transformer_layers: int = 6,
@@ -162,6 +148,7 @@ def load_base_model(
         num_heads=num_heads,
         encoder_type=encoder_type,
         decoder_type=decoder_type,
+        encoder_hidden_dim=encoder_hidden_dim,
     ).to(device)
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -630,10 +617,12 @@ def evaluate_baselines(
     lti_seed: int = 0,
     # SingleFrame architecture (must match its training config)
     sf_latent_dim: int = 1024,
+    sf_encoder_hidden_dim: Optional[int] = None,
     sf_encoder_type: str = "residual",
     sf_decoder_type: str = "residual",
     # Base model architecture
     base_latent_dim: int = 1024,
+    base_encoder_hidden_dim: Optional[int] = None,
     base_encoder_type: str = "residual",
     base_decoder_type: str = "residual",
     base_num_transformer_layers: int = 6,
@@ -795,6 +784,7 @@ def evaluate_baselines(
             latent_dim=sf_latent_dim,
             encoder_type=sf_encoder_type,
             decoder_type=sf_decoder_type,
+            encoder_hidden_dim=sf_encoder_hidden_dim,
         )
 
         sf_results = evaluate_learned_baseline(
@@ -829,6 +819,7 @@ def evaluate_baselines(
             device=device,
             num_actions=num_actions,
             latent_dim=base_latent_dim,
+            encoder_hidden_dim=base_encoder_hidden_dim,
             encoder_type=base_encoder_type,
             decoder_type=base_decoder_type,
             num_transformer_layers=base_num_transformer_layers,
@@ -846,9 +837,7 @@ def evaluate_baselines(
             use_flash_attention=use_flash_attention,
         )
         all_results["Base (Ours)"] = base_results
-        save_method_csv(
-            "Base", base_results, save_dir / "base" / "results.csv"
-        )
+        save_method_csv("Base", base_results, save_dir / "base" / "results.csv")
         del base_model
         torch.cuda.empty_cache() if device.type == "cuda" else None
     elif run_base:
@@ -919,10 +908,12 @@ if __name__ == "__main__":
         lti_seed=lti_cfg.get("seed", 0),
         # SingleFrame architecture
         sf_latent_dim=sf_cfg.get("latent_dim", 1024),
+        sf_encoder_hidden_dim=sf_cfg.get("encoder_hidden_dim", None),
         sf_encoder_type=sf_cfg.get("encoder_type", "residual"),
         sf_decoder_type=sf_cfg.get("decoder_type", "residual"),
         # Base model architecture
         base_latent_dim=base_cfg.get("latent_dim", 1024),
+        base_encoder_hidden_dim=base_cfg.get("encoder_hidden_dim", None),
         base_encoder_type=base_cfg.get("encoder_type", "residual"),
         base_decoder_type=base_cfg.get("decoder_type", "residual"),
         base_num_transformer_layers=base_cfg.get("num_transformer_layers", 6),

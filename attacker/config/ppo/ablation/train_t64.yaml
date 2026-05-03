@@ -20,7 +20,7 @@ model:
   encoder_type: residual
   decoder_type: residual
   use_flash_attention: true
-  use_rope: true  # required: learned pos embeddings only support up to max_seq_len=64
+  use_rope: true 
 
 training:
   num_epochs: 50

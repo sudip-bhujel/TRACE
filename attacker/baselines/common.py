@@ -1,6 +1,4 @@
-"""
-Common utilities for baseline methods.
-"""
+"""Shared utilities for gradient inversion baselines."""
 
 from collections import OrderedDict
 from typing import Dict
@@ -11,12 +9,9 @@ import torch.nn as nn
 
 def get_param_layer_map(num_actions: int = 5, hidden_size: int = 512):
     """
-    Build layer map from named_parameters only (matching gradient capture order).
-
-    The capture script (ppo/capture_gradients.py) flattens gradients sorted
-    alphabetically by parameter name. This function reproduces those exact
-    offsets, unlike analyze_gradients.get_layer_map() which uses state_dict()
-    and includes non-parameter buffers.
+    Layer map built from ``named_parameters()`` to match the capture script's
+    alphabetical flattening order. ``analyze_gradients.get_layer_map()`` uses
+    ``state_dict()`` and includes non-parameter buffers, so it does not match.
     """
     from victim.model import ActorCritic
 
@@ -43,11 +38,11 @@ def recover_action_from_gradient(
     num_actions: int = 5,
 ) -> int:
     """
-    Recover the true action from the policy-head gradient (Theorem 1).
+    Recover the true action from the policy-head gradient.
 
-    For policy head W (num_actions x hidden_size) the gradient is
-        dL/dW[k, j] = (pi(k|s) - delta_{k,a}) * h_j
-    so the row sum for the true action is uniquely negative.
+    For policy head W of shape (num_actions, hidden_size) the gradient is
+    dL/dW[k, j] = (pi(k|s) - delta_{k,a}) * h_j, so the row sum for the true
+    action is the unique negative entry.
     """
     info = layer_map.get("policy.weight")
     if info is None or info["end"] > len(gradient_vector):
@@ -61,14 +56,12 @@ def recover_action_from_gradient(
 
 
 def total_variation_loss(images: torch.Tensor) -> torch.Tensor:
-    """Anisotropic total variation."""
     dx = torch.mean(torch.abs(images[:, :, :, :-1] - images[:, :, :, 1:]))
     dy = torch.mean(torch.abs(images[:, :, :-1, :] - images[:, :, 1:, :]))
     return dx + dy
 
 
 def _sorted_param_info(model: nn.Module):
-    """Return (sorted_names, sorted_params) matching capture-script order."""
     param_dict = dict(model.named_parameters())
     sorted_names = sorted(param_dict.keys())
     sorted_params = [param_dict[n] for n in sorted_names]
@@ -81,7 +74,7 @@ def _unflatten_gradient(
     param_dict: dict,
     gradient_dim: int,
 ) -> list:
-    """Split a flattened gradient vector back into per-parameter tensors."""
+    """Split a flat gradient vector back into per-parameter tensors."""
     tensors = []
     offset = 0
     for name in sorted_names:

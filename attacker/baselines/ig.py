@@ -1,11 +1,4 @@
-"""
-Inverting Gradients (Geiping et al., NeurIPS 2020):
-   Optimization-based gradient matching using cosine similarity plus total
-   variation regularization. Labels are recovered analytically first, then
-   only the image is optimized via Adam.
-
-Based on: https://github.com/JonasGeiping/invertinggradients
-"""
+"""IG baseline (Geiping et al., 2020): cosine-similarity gradient matching with TV prior."""
 
 from typing import Optional, Tuple
 
@@ -24,9 +17,7 @@ from attacker.baselines.common import (
 
 
 class IGBaseline:
-    """
-    Inverting Gradients — Geiping et al., NeurIPS 2020.
-    """
+    """Inverting Gradients (Geiping et al., 2020)."""
 
     def __init__(
         self,
@@ -63,7 +54,6 @@ class IGBaseline:
         observed_gradient: torch.Tensor,
         action_tensor: torch.Tensor,
     ) -> Tuple[torch.Tensor, float]:
-        """Single optimisation run matching the official IG code."""
         device = observed_gradient.device
         observed_gradient = observed_gradient.detach()
 
@@ -78,8 +68,7 @@ class IGBaseline:
 
         opt = torch.optim.Adam([x_hat], lr=self.lr)
 
-        # MultiStepLR matching the official IG code:
-        # milestones at 3/8, 5/8, 7/8 of max_iterations, gamma=0.1
+        # Stepwise schedule from the official IG implementation: milestones at 3/8, 5/8, 7/8.
         n = self.num_iterations
         scheduler = torch.optim.lr_scheduler.MultiStepLR(
             opt,
@@ -110,8 +99,6 @@ class IGBaseline:
                     loss, sorted_params, create_graph=True
                 )
 
-                # Cosine similarity (cost_fn='sim') matching official code:
-                # 1 + sum(-g1*g2) / sqrt(sum(g1^2)) / sqrt(sum(g2^2))
                 dot = torch.zeros((), device=device)
                 for tg, og in zip(trial_grads, original_grads):
                     dot = dot + (tg * og).sum()
@@ -153,9 +140,6 @@ class IGBaseline:
     def reconstruct_single(
         self, observed_gradient: torch.Tensor
     ) -> Tuple[torch.Tensor, int]:
-        """
-        Reconstruct one image from a single observed gradient.
-        """
         device = observed_gradient.device
 
         action = recover_action_from_gradient(
@@ -182,15 +166,7 @@ class IGBaseline:
         gradients: torch.Tensor,
         show_progress: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Reconstruct images from a batch of gradient sequences.
-
-        Args:
-            gradients: (B, T, gradient_dim)
-        Returns:
-            images:  (B, T, 3, H, W)
-            actions: (B, T, num_actions) — logits (10.0 at recovered action)
-        """
+        """Reconstruct images and actions for a batch of gradient sequences."""
         B, T, _ = gradients.shape
         all_images = []
         all_actions = []

@@ -1,13 +1,4 @@
-"""
-Image Decoder Architectures for Gradient Inversion
-
-This module provides multiple decoder architectures for decoding latent
-representations into images and action predictions.
-
-Available decoders:
-- ImageDecoder: Basic transposed convolution decoder
-- ResidualImageDecoder: Decoder with residual blocks for better detail
-"""
+"""Image decoders that map latent representations to images and action logits."""
 
 from typing import Tuple
 
@@ -17,7 +8,7 @@ import torch.nn.functional as F
 
 
 class ImageDecoder(nn.Module):
-    """Basic transposed convolution decoder."""
+    """Basic transposed-convolution image decoder with an action head."""
 
     def __init__(
         self,
@@ -28,24 +19,21 @@ class ImageDecoder(nn.Module):
         super().__init__()
 
         self.image_size = image_size
-        self.init_size = image_size // 4  # 21
+        self.init_size = image_size // 4
 
-        # Project latent to initial feature map
         self.fc = nn.Linear(latent_dim, 256 * self.init_size * self.init_size)
 
-        # Transposed convolutions for image generation
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1),  # 21 -> 42
+            nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1),
             nn.BatchNorm2d(128),
             nn.ReLU(),
-            nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1),  # 42 -> 84
+            nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(),
-            nn.Conv2d(64, 3, 3, padding=1),  # 84 -> 84
+            nn.Conv2d(64, 3, 3, padding=1),
             nn.Sigmoid(),
         )
 
-        # Action prediction head
         self.action_head = nn.Linear(latent_dim, num_actions)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -62,7 +50,6 @@ class ImageDecoder(nn.Module):
         h = self.fc(x_flat)
         h = h.view(-1, 256, self.init_size, self.init_size)
         images = self.decoder(h)
-
         actions = self.action_head(x_flat)
 
         if has_time_dim and time_shape is not None:
@@ -76,8 +63,6 @@ class ImageDecoder(nn.Module):
 
 
 class ResidualBlock2d(nn.Module):
-    """2D Residual block for image decoder."""
-
     def __init__(self, channels: int):
         super().__init__()
         num_groups = min(32, channels)
@@ -95,13 +80,8 @@ class ResidualBlock2d(nn.Module):
 
 class ResidualImageDecoder(nn.Module):
     """
-    Decoder with residual blocks for better reconstruction quality.
-
-    Adds residual blocks after each upsampling layer to preserve details
-    and improve gradient flow during training.
-
-    Uses GroupNorm instead of BatchNorm to avoid inplace running-stat
-    updates that conflict with autoregressive rollout training.
+    Image decoder with residual blocks after each upsample. Uses GroupNorm so
+    running statistics do not conflict with autoregressive rollout training.
     """
 
     def __init__(
@@ -118,19 +98,16 @@ class ResidualImageDecoder(nn.Module):
 
         self.fc = nn.Linear(latent_dim, 256 * self.init_size * self.init_size)
 
-        # First upsample block with residuals
         self.up1 = nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1)
         self.gn1 = nn.GroupNorm(32, 128)
         self.res1 = nn.Sequential(
             *[ResidualBlock2d(128) for _ in range(num_res_blocks)]
         )
 
-        # Second upsample block with residuals
         self.up2 = nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1)
         self.gn2 = nn.GroupNorm(32, 64)
         self.res2 = nn.Sequential(*[ResidualBlock2d(64) for _ in range(num_res_blocks)])
 
-        # Final convolution
         self.final = nn.Sequential(
             nn.Conv2d(64, 32, 3, padding=1),
             nn.GroupNorm(16, 32),
@@ -181,19 +158,7 @@ def get_decoder(
     num_actions: int = 5,
     **kwargs,
 ) -> nn.Module:
-    """
-    Factory function to get decoder by type.
-
-    Args:
-        decoder_type: One of 'basic', 'residual'
-        latent_dim: Input latent dimension
-        image_size: Output image size
-        num_actions: Number of actions for action head
-        **kwargs: Additional decoder-specific arguments
-
-    Returns:
-        Decoder module
-    """
+    """Construct a decoder by name. Supported: ``basic``, ``residual``."""
     decoders = {
         "basic": ImageDecoder,
         "residual": ResidualImageDecoder,

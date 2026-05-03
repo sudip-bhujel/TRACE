@@ -2,13 +2,13 @@
 # Usage: source .env && sbatch -A $ACCOUNT_NAME attacker/scripts/train.sh <config_path>
 # Example: cd $SCRATCH/projects/grad_inversion && source .env && sbatch -A $ACCOUNT_NAME attacker/scripts/train.sh attacker/config/train_layers_dino.yaml
 
-#SBATCH --time=3-00:00:00
+#SBATCH --time=12:00:00
 #SBATCH --job-name=train
 #SBATCH --ntasks=1
 #SBATCH --partition=H8V141_SAP112M2000_L
 #SBATCH --gres=gpu:6
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=1024G
+#SBATCH --cpus-per-task=48
+#SBATCH --mem=768G
 #SBATCH -e ./logs/err_%j.log
 #SBATCH -o ./logs/out_%j.log
 #SBATCH --export=NONE
@@ -52,8 +52,14 @@ export MKL_NUM_THREADS=1
 echo "Job ID: $SLURM_JOB_ID"
 echo "Job Name: $JOB_NAME"
 
-# Get number of GPUs
-NGPUS=$(nvidia-smi -L | wc -l)
+# Debug GPU allocation
+echo "SLURM_GPUS_ON_NODE=$SLURM_GPUS_ON_NODE"
+echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+echo "SLURM_JOB_GPUS=$SLURM_JOB_GPUS"
+nvidia-smi -L 2>/dev/null || echo "nvidia-smi failed"
+
+# Get number of usable GPUs (ask PyTorch directly — nvidia-smi is unreliable on this cluster)
+NGPUS=$(python -c "import torch; print(torch.cuda.device_count())")
 echo "==== Detected $NGPUS GPUs ===="
 
 if [ "$NGPUS" -gt 1 ]; then

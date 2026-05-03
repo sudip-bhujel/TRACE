@@ -1,13 +1,4 @@
-"""
-Gradient Encoder Architectures for Gradient Inversion
-
-This module provides multiple encoder architectures for encoding gradient vectors
-into latent representations for image reconstruction.
-
-Available encoders:
-- GradientEncoder: Basic MLP encoder with LayerNorm and GELU
-- ResidualGradientEncoder: Encoder with residual connections for better gradient flow
-"""
+"""Gradient encoders that map flat gradient vectors into latent representations."""
 
 from typing import List, Optional
 
@@ -16,7 +7,7 @@ import torch.nn as nn
 
 
 class GradientEncoder(nn.Module):
-    """Basic MLP encoder with LayerNorm and GELU activation."""
+    """Basic MLP encoder with LayerNorm and GELU."""
 
     def __init__(
         self,
@@ -45,17 +36,11 @@ class GradientEncoder(nn.Module):
         self.encoder = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: (B, T, gradient_dim) or (B, gradient_dim)
-        Returns:
-            (B, T, latent_dim) or (B, latent_dim)
-        """
         return self.encoder(x)
 
 
 class ResidualBlock(nn.Module):
-    """Residual block with pre-normalization."""
+    """Pre-norm residual MLP block."""
 
     def __init__(self, dim: int, dropout: float = 0.1, expansion: int = 4):
         super().__init__()
@@ -75,16 +60,9 @@ class ResidualBlock(nn.Module):
 
 class ResidualGradientEncoder(nn.Module):
     """
-    Gradient encoder with residual connections for better gradient flow.
-
-    Uses a projection layer followed by stacked residual blocks.
-    This helps with training deeper networks and preserves information flow.
-
-    The input projection can be factorized as:
-      gradient_dim -> projection_rank -> hidden_dim
-    This significantly reduces parameters versus a single giant
-    gradient_dim -> hidden_dim linear layer while still using the full
-    gradient vector.
+    Gradient encoder with stacked residual blocks. The input projection may be
+    factorised as ``gradient_dim -> projection_rank -> hidden_dim`` to reduce
+    parameters versus a single dense layer.
     """
 
     def __init__(
@@ -122,12 +100,10 @@ class ResidualGradientEncoder(nn.Module):
                 nn.Dropout(dropout),
             )
 
-        # Stacked residual blocks
         self.blocks = nn.ModuleList(
             [ResidualBlock(hidden_dim, dropout, expansion) for _ in range(num_blocks)]
         )
 
-        # Final projection
         self.output_proj = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, latent_dim),
@@ -147,19 +123,7 @@ def get_encoder(
     dropout: float = 0.1,
     **kwargs,
 ) -> nn.Module:
-    """
-    Factory function to get encoder by type.
-
-    Args:
-        encoder_type: One of 'basic', 'residual'
-        gradient_dim: Input gradient dimension
-        latent_dim: Output latent dimension
-        dropout: Dropout rate
-        **kwargs: Additional encoder-specific arguments
-
-    Returns:
-        Encoder module
-    """
+    """Construct an encoder by name. Supported: ``basic``, ``residual``."""
     encoders = {
         "basic": GradientEncoder,
         "residual": ResidualGradientEncoder,

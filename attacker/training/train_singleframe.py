@@ -1,12 +1,4 @@
-"""
-Training Script for the SingleFrame Learned Baseline
-
-Trains a SingleFrameInversion model (same encoder + decoder as the temporal
-model, but without the causal transformer) for use as a baseline comparison.
-
-Usage:
-    uv run -m attacker.train_singleframe attacker/config/train_singleframe.yaml
-"""
+"""SingleFrameInversion baseline training (encoder + decoder; no temporal model)."""
 
 import sys
 from collections import defaultdict
@@ -255,9 +247,7 @@ def train(
     train_losses = []
     val_losses = []
 
-    print(f"\n{'=' * 60}")
-    print("Starting SingleFrame baseline training ...")
-    print(f"{'=' * 60}")
+    print("\nStarting SingleFrame baseline training...")
 
     for epoch in range(1, num_epochs + 1):
         train_loss = train_epoch(
@@ -312,7 +302,6 @@ def train(
             )
             print(f"  -> Saved best model (val_loss={best_val_loss:.4f})")
 
-    # Final model and training curves
     torch.save(
         {
             "epoch": num_epochs,
@@ -328,13 +317,12 @@ def train(
     plt.plot(val_losses, label="Val")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
-    # plt.title("SingleFrame Baseline Training Curves")
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.savefig(save_dir / "training_curves.png", dpi=150)
     plt.close()
 
-    print(f"\nTraining complete! Best val loss: {best_val_loss:.4f}")
+    print(f"\nTraining complete. Best val loss: {best_val_loss:.4f}")
     print(f"Checkpoints saved to: {save_dir}")
 
 

@@ -7,22 +7,18 @@ device: auto
 data:
   h5_path: trajectory_data/a2c/gradients_train_augmented.h5
   gradient_layers:
-    # Conv1 (3->32, k=8, s=4)
     - encoder.0.0.weight
     - encoder.0.0.bias
     - encoder.0.2.weight
     - encoder.0.2.bias
-    # Conv2 (32->64, k=4, s=2)
     - encoder.1.0.weight
     - encoder.1.0.bias
     - encoder.1.2.weight
     - encoder.1.2.bias
-    # Conv3 (64->64, k=3, s=1)
     - encoder.2.0.weight
     - encoder.2.0.bias
     - encoder.2.2.weight
     - encoder.2.2.bias
-    # Conv4 (64->64, k=3, s=2)
     - encoder.3.0.weight
     - encoder.3.0.bias
     - encoder.3.2.weight

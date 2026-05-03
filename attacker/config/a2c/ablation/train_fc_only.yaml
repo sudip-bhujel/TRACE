@@ -7,7 +7,6 @@ device: auto
 data:
   h5_path: trajectory_data/a2c/gradients_train_augmented.h5
   gradient_layers:
-    # FC layer (conv_dim -> 512)
     - fc.0.weight
     - fc.0.bias
 

@@ -1,13 +1,4 @@
-"""
-Temporal Gradient Inversion - Evaluation Script
-
-This script loads a trained temporal model and generates reconstruction
-visualizations on test data, computing PSNR, SSIM, MS-SSIM, LPIPS, FID, and
-action accuracy metrics.
-
-Usage:
-    uv run -m attacker.evaluate config/eval_temporal.yaml
-"""
+"""Evaluate a trained gradient inversion model and produce metrics + reconstruction figures."""
 
 import math
 import sys
@@ -56,9 +47,7 @@ def load_model(
     model_type: str = "temporal",
     **kwargs,
 ) -> nn.Module:
-    """Load trained temporal model from checkpoint."""
-    # Build decoder kwargs for pretrained decoder
-
+    """Load a trained attacker model from checkpoint."""
     if model_type == "autoregressive":
         model = AutoregressiveGradientInversion(
             gradient_dim=gradient_dim,
@@ -99,7 +88,6 @@ def load_model(
 
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-    # Pretrained decoder checkpoints exclude frozen VAE weights (re-loaded by constructor)
     is_pretrained = (
         checkpoint.get("decoder_type") == "pretrained" or decoder_type == "pretrained"
     )
@@ -108,7 +96,7 @@ def load_model(
         model.load_state_dict(checkpoint["model_state_dict"], strict=not is_pretrained)
         print(f"Loaded checkpoint from epoch {checkpoint.get('epoch', '?')}")
         if is_pretrained:
-            print("  (Loaded with strict=False — frozen VAE weights from HuggingFace)")
+            print("  (strict=False; frozen VAE weights from HuggingFace)")
         if "val_loss" in checkpoint:
             print(f"  Val loss: {checkpoint['val_loss'].get('total', '?'):.4f}")
     else:
@@ -153,16 +141,7 @@ def evaluate_and_save_reconstructions(
     model_type: str = "temporal",
     teacher_forcing: bool = False,
 ):
-    """
-    Run evaluation on test data, compute comprehensive metrics, and save
-    reconstruction visualizations.
-
-    Computes per-image MSE, PSNR, SSIM, MS-SSIM, LPIPS and aggregate FID. Also
-    records action prediction accuracy and saves a confusion matrix.
-
-    Returns:
-        Dict of aggregate metric values.
-    """
+    """Compute aggregate metrics and save reconstruction figures + confusion matrix."""
     plt.rcParams["font.family"] = "serif"
     model.eval()
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -185,7 +164,6 @@ def evaluate_and_save_reconstructions(
             print(f"Only {seq_idx} sequences available in dataset")
             break
 
-        # Take first sequence from batch
         gradients = gradients[:1].to(device)
         images = images[:1]
         actions = actions[:1]
@@ -200,10 +178,8 @@ def evaluate_and_save_reconstructions(
             else:
                 pred_images, pred_actions, _, _ = model(gradients)
 
-        # Accumulate metrics (pred_images still on device)
         metrics.update(pred_images, images, pred_actions, actions)
 
-        # Move to CPU for per-sequence display and visualization
         pred_images_cpu = pred_images.cpu()
         pred_labels = pred_actions.argmax(dim=-1).cpu()
 
@@ -215,27 +191,32 @@ def evaluate_and_save_reconstructions(
 
         T = images.shape[1]
 
-        fig, axes = plt.subplots(2, T, figsize=(2 * T, 4), squeeze=False)
+        fig, axes = plt.subplots(2, T, figsize=(1.8 * T, 4), squeeze=False)
+        fig.subplots_adjust(wspace=0.07, hspace=0.12)
         for t in range(T):
             axes[0, t].imshow(images[0, t].permute(1, 2, 0).numpy())
-            axes[0, t].set_title(f"t={t} GT (a={actions[0, t].item()})", fontsize=8)
+            axes[0, t].set_title(f"t={t}, a={actions[0, t].item()}", fontsize=10)
             axes[0, t].axis("off")
 
             pred_img = pred_images_cpu[0, t].permute(1, 2, 0).numpy().clip(0, 1)
             axes[1, t].imshow(pred_img)
-            axes[1, t].set_title(
-                f"t={t} Pred (a={pred_labels[0, t].item()})", fontsize=8
-            )
+            axes[1, t].set_title(f"t={t}, a={pred_labels[0, t].item()}", fontsize=10)
             axes[1, t].axis("off")
 
-        plt.suptitle(
-            f"MSE: {mse:.4f} | PSNR: {psnr:.1f} dB | Action Accuracy: {100 * correct / total:.1f}%"
-        )
-        plt.tight_layout()
+        axes[0, 0].set_ylabel("Ground Truth", fontsize=10, rotation=90, labelpad=4)
+        axes[1, 0].set_ylabel("Reconstructed", fontsize=10, rotation=90, labelpad=4)
+        for row in range(2):
+            axes[row, 0].axis("on")
+            axes[row, 0].set_xticks([])
+            axes[row, 0].set_yticks([])
+            for spine in axes[row, 0].spines.values():
+                spine.set_visible(False)
 
         stem = save_dir / f"reconstruction_seq_{seq_idx + 1:03d}"
-        plt.savefig(stem.with_suffix(".png"), dpi=150, bbox_inches="tight")
-        plt.savefig(stem.with_suffix(".pdf"), bbox_inches="tight")
+        plt.savefig(
+            stem.with_suffix(".png"), dpi=150, bbox_inches="tight", pad_inches=0.0
+        )
+        plt.savefig(stem.with_suffix(".pdf"), bbox_inches="tight", pad_inches=0.0)
         plt.close()
 
         print(
@@ -243,41 +224,35 @@ def evaluate_and_save_reconstructions(
             f" | Action Accuracy: {100 * correct / total:.1f}%"
         )
 
-    # --- Aggregate metrics ---
     results = metrics.compute()
 
-    print(f"\n{'=' * 60}")
     print_results(
         results,
         header=(
-            f"Evaluation Summary ({results.get('num_images', 0)} images"
+            f"\nEvaluation Summary ({results.get('num_images', 0)} images"
             f" from {evaluated} sequences)"
         ),
     )
-    print(f"{'=' * 60}")
 
-    # Per-timestep breakdown
     per_timestep = metrics.compute_per_timestep()
     if per_timestep:
         print("\n  Per-timestep metrics:")
         print_per_timestep_results(per_timestep)
         print()
 
-    # Save metrics (JSON + CSV)
     metrics.save(save_dir / "metrics.json")
     print(f"  Metrics saved to: {save_dir / 'metrics.json'}")
     print(f"  Metrics saved to: {save_dir / 'metrics.csv'}")
 
-    # Save confusion matrix
     if metrics.all_pred_actions:
         cm = metrics.confusion_matrix(num_actions=num_actions)
         cm_path = save_dir / "confusion_matrix.png"
         _save_confusion_matrix(cm, cm_path, action_labels)
-        print(f"  Confusion matrix saved to: {cm_path} / {cm_path.with_suffix('.pdf').name}")
+        print(
+            f"  Confusion matrix saved to: {cm_path} / {cm_path.with_suffix('.pdf').name}"
+        )
 
     print(f"  Figures saved to: {save_dir}")
-    print(f"{'=' * 60}")
-
     return results
 
 
@@ -312,8 +287,7 @@ def evaluate(
     teacher_forcing: bool = False,
     **kwargs,
 ):
-    """Main evaluation function."""
-    # Setup device
+    """Run full evaluation: load checkpoint, compute metrics, save reconstructions."""
     if device == "auto":
         if torch.cuda.is_available():
             device = torch.device("cuda")
@@ -325,7 +299,6 @@ def evaluate(
         device = torch.device(device)
     print(f"Using device: {device}")
 
-    # Load test dataset
     print(f"\nLoading test data from: {h5_path}")
     dataset = TemporalGradientDataset(
         h5_path,
@@ -335,7 +308,6 @@ def evaluate(
         gradient_layers=gradient_layers,
     )
 
-    # Use effective gradient dim (handles both layer selection and dim truncation)
     actual_gradient_dim = dataset.effective_gradient_dim
     num_actions = len(dataset.actions.unique())
 
@@ -350,7 +322,6 @@ def evaluate(
     print(f"  Gradient dim: {actual_gradient_dim}")
     print(f"  Num actions: {num_actions}")
 
-    # Load model
     print(f"\nLoading model from: {checkpoint_path}")
     model = load_model(
         checkpoint_path,
@@ -375,9 +346,10 @@ def evaluate(
         **kwargs,
     )
 
-    # Run evaluation
     print(f"\nGenerating reconstructions for {num_sequences} sequences...")
-    print(f"  Inference mode: {'teacher-forced' if teacher_forcing else 'autoregressive'}")
+    print(
+        f"  Inference mode: {'teacher-forced' if teacher_forcing else 'autoregressive'}"
+    )
     evaluate_and_save_reconstructions(
         model=model,
         dataloader=dataloader,
@@ -397,7 +369,6 @@ if __name__ == "__main__":
     cfg = OmegaConf.load(sys.argv[1])
     print(f"Loaded config from {sys.argv[1]}")
 
-    # Extract config values
     data_cfg = cfg.get("data", {})
     model_cfg = cfg.get("model", {})
     eval_cfg = cfg.get("eval", {})

@@ -1,6 +1,4 @@
-"""
-Training script for the temporal gradient inversion model.
-"""
+"""Training entry point for the temporal and autoregressive gradient inversion models."""
 
 import os
 import random
@@ -59,14 +57,12 @@ def train_epoch(
         images = images.to(device)
         actions = actions.to(device)
 
-        # Augmentation: gradient noise
         if gradient_noise_scale > 0:
             grad_std = gradients.std(dim=-1, keepdim=True).clamp(min=1e-6)
             gradients = gradients + gradient_noise_scale * grad_std * torch.randn_like(
                 gradients
             )
 
-        # Augmentation: gradient masking
         if gradient_mask_ratio > 0:
             mask = (
                 torch.rand(gradients.shape[:-1], device=device).unsqueeze(-1)
@@ -74,11 +70,8 @@ def train_epoch(
             ).float()
             gradients = gradients * mask
 
-        # Forward pass with mixed precision (Flash Attention auto-enabled via SDPA)
-        # For autoregressive models, a single model() call computes both the
-        # primary output AND rollout (if rollout_steps > 0). This is required
-        # for DDP: calling the model twice causes DDP's per-parameter backward
-        # hooks to fire twice for shared params (e.g. start_token).
+        # Single model() call computes primary + rollout outputs together so DDP
+        # backward hooks fire only once per shared parameter (e.g. start_token).
         with torch.autocast(device_type=device.type, enabled=scaler is not None):
             if model_type == "autoregressive":
                 pred_images, pred_actions, latents, ro_result = model(
@@ -97,7 +90,6 @@ def train_epoch(
                 pred_images, images, pred_actions, actions, latents=latents
             )
 
-            # Add rollout loss if present
             if ro_result is not None and rollout_weight > 0:
                 ro_imgs, ro_acts, ro_lats, t_start = ro_result
                 t_end = t_start + ro_imgs.shape[1]
@@ -115,13 +107,11 @@ def train_epoch(
 
             loss = loss / accumulation_steps
 
-        # NaN detection - skip bad batches to prevent training corruption
         if torch.isnan(loss) or torch.isinf(loss):
             print("Warning: NaN/Inf loss detected, skipping batch")
             optimizer.zero_grad()
             continue
 
-        # Backward
         if scaler is not None:
             scaler.scale(loss).backward()
         else:
@@ -130,7 +120,6 @@ def train_epoch(
         if (pbar.n + 1) % accumulation_steps == 0:
             if scaler is not None:
                 scaler.unscale_(optimizer)
-                # Check for NaN gradients before stepping
                 valid_grads = True
                 for param in model.parameters():
                     if param.grad is not None and (
@@ -139,9 +128,7 @@ def train_epoch(
                         valid_grads = False
                         break
                 if valid_grads:
-                    torch.nn.utils.clip_grad_norm_(
-                        model.parameters(), max_norm=0.5
-                    )  # Tighter clipping
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
                     scaler.step(optimizer)
                 else:
                     print(
@@ -150,17 +137,13 @@ def train_epoch(
                 scaler.update()
                 optimizer.zero_grad()
             else:
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), max_norm=0.5
-                )  # Tighter clipping
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
                 optimizer.step()
                 optimizer.zero_grad()
 
-        # Accumulate metrics
         for k, v in loss_dict.items():
             total_losses[k] += v
 
-        # Accuracy (flatten over batch and time)
         pred_labels = pred_actions.argmax(dim=-1).flatten()
         correct += (pred_labels == actions.flatten()).sum().item()
         total += actions.numel()
@@ -355,22 +338,8 @@ def train(
     rollout_steps: int = 0,
     rollout_weight: float = 0.0,
 ):
-    """
-    Main training function for temporal model.
-
-    Args:
-        use_flash_attention: If True, explicitly enable Flash Attention via
-            torch.backends.cuda.sdp_kernel on CUDA (PyTorch 2.0+ required).
-        use_wandb: If True, enable Weights & Biases logging.
-
-    Supports DDP (Distributed Data Parallel) training when launched with torchrun:
-        torchrun --standalone --nproc_per_node=2 -m ppo.attacker_temporal --config ...
-    """
-
-    # =========================================================================
-    # DDP Setup
-    # =========================================================================
-    ddp = int(os.environ.get("RANK", -1)) != -1  # Is this a DDP run?
+    """Run training; supports DDP when launched with torchrun."""
+    ddp = int(os.environ.get("RANK", -1)) != -1
     if ddp:
         init_process_group(backend="nccl")
         ddp_rank = int(os.environ["RANK"])
@@ -378,15 +347,13 @@ def train(
         ddp_world_size = int(os.environ["WORLD_SIZE"])
         device = torch.device(f"cuda:{ddp_local_rank}")
         torch.cuda.set_device(device)
-        master_process = ddp_rank == 0  # Only rank 0 logs/saves
-        seed_offset = ddp_rank  # Each process gets a different seed
+        master_process = ddp_rank == 0
+        seed_offset = ddp_rank
     else:
-        # Single GPU / CPU training
         master_process = True
         seed_offset = 0
         ddp_world_size = 1
         ddp_local_rank = 0
-        # Setup device
         if device == "auto":
             if torch.cuda.is_available():
                 device = torch.device("cuda")
@@ -397,7 +364,6 @@ def train(
         else:
             device = torch.device(device)
 
-    # Set seed for reproducibility
     torch.manual_seed(42 + seed_offset)
 
     if master_process:
@@ -407,18 +373,15 @@ def train(
                 f"DDP enabled: world_size={ddp_world_size}, accumulation_steps={accumulation_steps}"
             )
 
-    # Check Flash Attention availability
     if device.type == "cuda" and hasattr(torch.backends.cuda, "flash_sdp_enabled"):
         flash_enabled = torch.backends.cuda.flash_sdp_enabled()
         if master_process:
             print(f"Flash Attention available: {flash_enabled}")
 
-    # Create save directory (only master)
     save_dir = Path(save_dir)
     if master_process:
         save_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load dataset
     dataset = TemporalGradientDataset(
         h5_path,
         sequence_length=sequence_length,
@@ -427,19 +390,16 @@ def train(
         gradient_layers=gradient_layers,
         max_sequences=max_sequences,
     )
-    # Use effective gradient dim (handles both layer selection and dim truncation)
     actual_gradient_dim = dataset.effective_gradient_dim
 
-    # Stratified subsampling for few-shot fine-tuning
     if finetune_fraction < 1.0:
+        # Stratified per-episode subsampling for few-shot fine-tuning.
         rng = random.Random(42)
-        # Group sequence indices by episode
         ep_to_seqs = {}
         for seq_idx, (start_idx, _end_idx) in enumerate(dataset.sequence_indices):
             ep_id = dataset.episode_ids[start_idx].item()
             ep_to_seqs.setdefault(ep_id, []).append(seq_idx)
 
-        # Keep finetune_fraction of sequences from EACH episode
         keep_indices = []
         for ep_id in sorted(ep_to_seqs.keys()):
             seqs = ep_to_seqs[ep_id]
@@ -451,13 +411,11 @@ def train(
             print(f"  {len(keep_indices)} / {len(dataset)} sequences")
             print(f"  Episodes: {len(ep_to_seqs)}")
 
-        # Train on ALL selected data; use 10% overlap as val for monitoring
         train_dataset = torch.utils.data.Subset(dataset, keep_indices)
         val_size = max(1, int(len(keep_indices) * 0.1))
         val_indices = rng.sample(keep_indices, val_size)
         val_dataset = torch.utils.data.Subset(dataset, val_indices)
     else:
-        # Normal 95/5 split
         train_size = int(0.95 * len(dataset))
         val_size = len(dataset) - train_size
         train_dataset, val_dataset = torch.utils.data.random_split(
@@ -471,7 +429,6 @@ def train(
         print(f"  Train: {len(train_dataset)} sequences")
         print(f"  Val: {len(val_dataset)} sequences")
 
-    # Create dataloaders with DistributedSampler for DDP
     train_sampler = DistributedSampler(train_dataset, shuffle=True) if ddp else None
     val_sampler = DistributedSampler(val_dataset, shuffle=False) if ddp else None
 
@@ -492,12 +449,10 @@ def train(
         pin_memory=True,
     )
 
-    # Get number of actions from dataset
     num_actions = len(dataset.actions.unique())
     if master_process:
         print(f"  Number of actions: {num_actions}")
 
-    # Create model (Flash Attention auto-enabled by PyTorch 2.0+ with mixed precision)
     if model_type == "autoregressive":
         model: nn.Module = AutoregressiveGradientInversion(
             gradient_dim=actual_gradient_dim,
@@ -543,7 +498,6 @@ def train(
     if master_process:
         print(f"\nModel parameters: {num_params:,}")
 
-    # Load pretrained checkpoint for fine-tuning
     if pretrained_checkpoint:
         ckpt = torch.load(
             pretrained_checkpoint, map_location=device, weights_only=False
@@ -557,16 +511,14 @@ def train(
             )
             print(f"  Pretrained epoch: {pretrained_epoch}")
 
-    # Wrap model with DDP
     if ddp:
         model = DDP(
             model,
             device_ids=[ddp_local_rank],
             find_unused_parameters=(model_type == "autoregressive"),
         )
-    raw_model = cast(nn.Module, model.module if ddp else model)  # Unwrap for saving
+    raw_model = cast(nn.Module, model.module if ddp else model)
 
-    # Loss and optimizer
     criterion = TemporalCombinedLoss(
         mse_weight=mse_weight,
         l1_weight=l1_weight,
@@ -575,7 +527,7 @@ def train(
         lpips_weight=lpips_weight,
         lpips_net=lpips_net,
         latent_temporal_weight=latent_temporal_weight,
-    ).to(device)  # Move to device for VGG buffers
+    ).to(device)
 
     if master_process:
         print("\nLoss weights:")
@@ -590,7 +542,6 @@ def train(
         raw_model.parameters(), lr=learning_rate, weight_decay=weight_decay
     )
 
-    # Learning rate scheduler
     if lr_schedule == "cosine":
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=num_epochs, eta_min=min_lr
@@ -602,7 +553,6 @@ def train(
         if master_process:
             print("\nNo LR scheduling")
 
-    # LR warmup wrapper
     if warmup_epochs > 0 and scheduler is not None:
         from_scheduler = scheduler
         scheduler = optim.lr_scheduler.SequentialLR(
@@ -618,27 +568,21 @@ def train(
         if master_process:
             print(f"Added {warmup_epochs} epoch LR warmup")
 
-    # Mixed precision
     scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
     if scaler and master_process:
         print("Using mixed precision training (fp16)")
 
-    # Training loop
     best_val_loss = float("inf")
     train_losses = []
     val_losses = []
 
     if master_process:
-        print("\n" + "=" * 60)
-        print("Starting temporal training...")
-        print("=" * 60)
+        print("\nStarting training...")
 
     for epoch in range(1, num_epochs + 1):
-        # Set epoch for DistributedSampler (ensures different shuffling each epoch)
         if ddp and train_sampler is not None:
             train_sampler.set_epoch(epoch)
 
-        # Compute scheduled sampling probability for this epoch
         if epoch <= scheduled_sampling_warmup:
             sampling_prob = 0.0
         else:
@@ -672,7 +616,6 @@ def train(
         )
         train_losses.append(train_loss["total"])
 
-        # Log train metrics (master only)
         if master_process:
             print(
                 f"Epoch {epoch}: Train Loss: {train_loss['total']:.4f} (MSE: {train_loss['mse']:.4f}, L1: {train_loss['l1']:.4f}, Act: {train_loss['action']:.4f}, Temp: {train_loss['temporal']:.4f}, LTemp: {train_loss.get('latent_temporal', 0):.4f}, LPIPS: {train_loss['lpips']:.4f}) | Acc: {train_loss['accuracy']:.2f}%"
@@ -700,7 +643,6 @@ def train(
         )
         val_losses.append(val_loss["total"])
 
-        # Log val metrics (master only)
         if master_process:
             print(
                 f"Epoch {epoch}: Val Loss: {val_loss['total']:.4f} (MSE: {val_loss['mse']:.4f}, L1: {val_loss['l1']:.4f}, Act: {val_loss['action']:.4f}, Temp: {val_loss['temporal']:.4f}, LTemp: {val_loss.get('latent_temporal', 0):.4f}, LPIPS: {val_loss['lpips']:.4f}) | Acc: {val_loss['accuracy']:.2f}%"
@@ -721,7 +663,6 @@ def train(
         if scheduler is not None:
             scheduler.step()
 
-        # Save best model (master only)
         if val_loss["total"] < best_val_loss and master_process:
             best_val_loss = val_loss["total"]
             state_dict = raw_model.state_dict()
@@ -738,7 +679,6 @@ def train(
             )
             print(f"  -> Saved best model (val_loss={best_val_loss:.4f})")
 
-        # Save reconstructions periodically (master only)
         if master_process and (epoch % 5 == 0 or epoch == 1):
             save_temporal_reconstructions(
                 raw_model,
@@ -749,7 +689,6 @@ def train(
                 model_type=model_type,
             )
 
-    # Save final model (master only)
     if master_process:
         state_dict = raw_model.state_dict()
         torch.save(
@@ -762,24 +701,19 @@ def train(
             save_dir / "final_model.pt",
         )
 
-        # Plot training curves
         plt.figure(figsize=(10, 4))
         plt.plot(train_losses, label="Train")
         plt.plot(val_losses, label="Val")
         plt.xlabel("Epoch")
         plt.ylabel("Loss")
-        # plt.title("Temporal Model Training Curves")
         plt.legend()
         plt.grid(True, alpha=0.3)
         plt.savefig(save_dir / "training_curves.png", dpi=150)
         plt.close()
 
-        print("\n" + "=" * 60)
-        print(f"Training complete! Best val loss: {best_val_loss:.4f}")
+        print(f"\nTraining complete. Best val loss: {best_val_loss:.4f}")
         print(f"Checkpoints saved to: {save_dir}")
-        print("=" * 60)
 
-    # DDP cleanup
     if ddp:
         destroy_process_group()
 
@@ -791,7 +725,6 @@ if __name__ == "__main__":
     assert isinstance(cfg_loaded, DictConfig), "Config root must be a mapping"
     cfg: DictConfig = cfg_loaded
 
-    # Extract config with defaults
     data_cfg = cast(Dict[str, Any], cfg.get("data", {}))
     model_cfg = cast(Dict[str, Any], cfg.get("model", {}))
     training_cfg = cast(Dict[str, Any], cfg.get("training", {}))
@@ -799,16 +732,14 @@ if __name__ == "__main__":
     loss_cfg = cast(Dict[str, Any], cfg.get("loss", {}))
     eval_cfg = cast(Dict[str, Any], cfg.get("eval", {}))
 
-    # Apply CLI overrides
     gradient_dim = data_cfg.get("gradient_dim", None)
     gradient_layers = data_cfg.get("gradient_layers", None)
     if gradient_layers is not None:
-        gradient_layers = list(gradient_layers)  # Convert from OmegaConf ListConfig
+        gradient_layers = list(gradient_layers)
     save_dir = output_cfg.get("save_dir", "ckpts/attacker_temporal")
     num_epochs = training_cfg.get("num_epochs", 50)
     seq_len = model_cfg.get("sequence_length", 8)
 
-    # Save config to output directory for reproducibility
     is_master = int(os.environ.get("RANK", 0)) == 0
     if is_master:
         os.makedirs(save_dir, exist_ok=True)
@@ -818,8 +749,6 @@ if __name__ == "__main__":
 
     wandb_cfg = cast(Dict[str, Any], cfg.get("wandb", {}))
 
-    # Only init WandB on master process (rank 0) to avoid duplicate runs
-    is_master = int(os.environ.get("RANK", 0)) == 0
     if wandb_cfg.get("enabled", False) and is_master:
         wandb.login()
         wandb_container = OmegaConf.to_container(cfg, resolve=True)
@@ -857,7 +786,6 @@ if __name__ == "__main__":
         encoder_type=model_cfg.get("encoder_type", "basic"),
         decoder_type=model_cfg.get("decoder_type", "basic"),
         dropout=model_cfg.get("dropout", 0.1),
-        # Loss weights
         mse_weight=loss_cfg.get("mse_weight", 1.0),
         l1_weight=loss_cfg.get("l1_weight", 0.5),
         action_weight=loss_cfg.get("action_weight", 0.1),
@@ -866,17 +794,14 @@ if __name__ == "__main__":
         lpips_net=loss_cfg.get("lpips_net", "vgg"),
         use_flash_attention=model_cfg.get("use_flash_attention", True),
         use_wandb=wandb_cfg.get("enabled", False),
-        # Training improvements
         gradient_noise_scale=training_cfg.get("gradient_noise_scale", 0.0),
         warmup_epochs=training_cfg.get("warmup_epochs", 0),
         lr_schedule=training_cfg.get("lr_schedule", "none"),
         min_lr=training_cfg.get("min_lr", 1e-6),
         weight_decay=training_cfg.get("weight_decay", 1e-5),
         num_workers=training_cfg.get("num_workers", 4),
-        # Fine-tuning
         pretrained_checkpoint=model_cfg.get("pretrained_checkpoint", ""),
         finetune_fraction=data_cfg.get("finetune_fraction", 1.0),
-        # Ablation
         skip_transformer=model_cfg.get("skip_transformer", False),
         is_causal=model_cfg.get("is_causal", True),
         temporal_model_type=model_cfg.get("temporal_model_type", "transformer"),
@@ -886,7 +811,6 @@ if __name__ == "__main__":
         max_sequences=data_cfg.get("max_sequences", None),
         gradient_mask_ratio=training_cfg.get("gradient_mask_ratio", 0.0),
         model_type=model_cfg.get("model_type", "temporal"),
-        # Scheduled sampling & rollout
         scheduled_sampling_start=training_cfg.get("scheduled_sampling_start", 0.0),
         scheduled_sampling_end=training_cfg.get("scheduled_sampling_end", 0.0),
         scheduled_sampling_warmup=training_cfg.get("scheduled_sampling_warmup", 5),
@@ -894,8 +818,6 @@ if __name__ == "__main__":
         rollout_weight=training_cfg.get("rollout_weight", 0.0),
     )
 
-    # Run evaluation on best model after training (master process only)
-    is_master = int(os.environ.get("RANK", 0)) == 0
     if is_master and eval_cfg.get("enabled", True):
         print("Running post-training evaluation...")
 

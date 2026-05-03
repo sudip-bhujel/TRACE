@@ -7,10 +7,8 @@ device: auto
 data:
   h5_path: trajectory_data/ppo/gradients_train_augmented.h5
   gradient_layers:
-    # Policy head (512 -> 5)
     - policy.weight
     - policy.bias
-    # Value head (512 -> 1)
     - value.weight
     - value.bias
 

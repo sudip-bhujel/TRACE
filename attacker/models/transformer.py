@@ -6,12 +6,7 @@ import torch.nn.functional as F
 
 
 def _math_only_sdpa_context():
-    """
-    Return an SDPA context manager that forces the math backend.
-
-    Uses the new torch.nn.attention API when available, with a fallback to the
-    legacy torch.backends.cuda API for older PyTorch versions.
-    """
+    """SDPA context that forces the math backend; falls back to legacy API."""
     if (
         hasattr(torch.nn, "attention")
         and hasattr(torch.nn.attention, "sdpa_kernel")
@@ -32,11 +27,7 @@ def _math_only_sdpa_context():
 
 
 class RotaryEmbedding(nn.Module):
-    """Rotary Position Embedding (Su et al., 2021).
-
-    Encodes *relative* temporal distance directly in the attention scores,
-    so adjacent frames naturally attend more to each other.
-    """
+    """Rotary Position Embedding (Su et al., 2021)."""
 
     def __init__(self, dim: int, max_seq_len: int = 256):
         super().__init__()
@@ -46,8 +37,7 @@ class RotaryEmbedding(nn.Module):
 
     def _build_cache(self, seq_len: int):
         t = torch.arange(seq_len, dtype=self.inv_freq.dtype, device=self.inv_freq.device)
-        freqs = torch.outer(t, self.inv_freq)  # (seq_len, dim//2)
-        # cos and sin caches: (1, 1, seq_len, dim//2)
+        freqs = torch.outer(t, self.inv_freq)
         self.register_buffer(
             "cos_cache", freqs.cos().unsqueeze(0).unsqueeze(0), persistent=False
         )
@@ -56,14 +46,12 @@ class RotaryEmbedding(nn.Module):
         )
 
     def forward(self, seq_len: int):
-        """Return (cos, sin) each of shape (1, 1, seq_len, dim//2)."""
         if seq_len > self.cos_cache.shape[2]:
             self._build_cache(seq_len)
         return self.cos_cache[:, :, :seq_len], self.sin_cache[:, :, :seq_len]
 
 
 def _rotate_half(x: torch.Tensor) -> torch.Tensor:
-    """Rotate the last dimension by half: [x1, x2] -> [-x2, x1]."""
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2 :]
     return torch.cat((-x2, x1), dim=-1)
@@ -75,28 +63,15 @@ def apply_rotary_emb(
     cos: torch.Tensor,
     sin: torch.Tensor,
 ) -> tuple:
-    """Apply RoPE to query and key tensors.
-
-    Args:
-        q, k: (B, heads, T, head_dim)
-        cos, sin: (1, 1, T, head_dim//2) — will be broadcast.
-
-    Returns:
-        (q_rotated, k_rotated) with same shape as input.
-    """
-    # Expand cos/sin to full head_dim by repeating
-    cos = cos.repeat(1, 1, 1, 2)  # (1, 1, T, head_dim)
-    sin = sin.repeat(1, 1, 1, 2)  # (1, 1, T, head_dim)
+    cos = cos.repeat(1, 1, 1, 2)
+    sin = sin.repeat(1, 1, 1, 2)
     q_rot = q * cos + _rotate_half(q) * sin
     k_rot = k * cos + _rotate_half(k) * sin
     return q_rot, k_rot
 
 
 class MultiHeadAttention(nn.Module):
-    """
-    Multi-head attention using F.scaled_dot_product_attention.
-    Supports optional Rotary Position Embeddings (RoPE).
-    """
+    """Multi-head attention with optional Rotary Position Embeddings."""
 
     def __init__(
         self,
@@ -117,7 +92,6 @@ class MultiHeadAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = latent_dim // num_heads
 
-        # Combined QKV projection
         self.qkv_proj = nn.Linear(latent_dim, 3 * latent_dim)
         self.out_proj = nn.Linear(latent_dim, latent_dim)
         self.dropout = dropout
@@ -128,29 +102,19 @@ class MultiHeadAttention(nn.Module):
     def forward(
         self, x: torch.Tensor, use_flash_attention: bool = True
     ) -> torch.Tensor:
-        """
-        Args:
-            x: (B, T, latent_dim)
-            use_flash_attention: If False, disable Flash Attention kernels on CUDA.
-        Returns:
-            (B, T, latent_dim)
-        """
         B, T, _ = x.shape
 
-        # Project and split into Q, K, V
         qkv = self.qkv_proj(x)
         qkv = qkv.reshape(B, T, 3, self.num_heads, self.head_dim)
-        qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, B, heads, T, head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        # Apply RoPE if enabled
         if self.use_rope:
             cos, sin = self.rope(T)
             cos = cos.to(q.dtype).to(q.device)
             sin = sin.to(q.dtype).to(q.device)
             q, k = apply_rotary_emb(q, k, cos, sin)
 
-        # Flash Attention toggle
         sdpa_ctx = nullcontext()
         if q.is_cuda and not use_flash_attention:
             sdpa_ctx = _math_only_sdpa_context()
@@ -165,20 +129,15 @@ class MultiHeadAttention(nn.Module):
                 is_causal=self.is_causal,
             )
 
-        # Reshape and project output
         out = out.transpose(1, 2).contiguous()
         out = out.reshape(B, T, self.latent_dim)
         return self.out_proj(out)
 
 
 class TransformerBlock(nn.Module):
-    """Transformer block with gated residual connections.
-
-    Instead of the standard ``x = x + attn(x)``, uses a learnable gate
-    initialized near zero so that the block starts as a near-identity
-    mapping.  The model gradually discovers when temporal context helps,
-    preventing the "shortcut" problem observed in per-frame-dominant
-    architectures.
+    """
+    Pre-norm transformer block with learnable gates initialised near zero so the
+    block starts as a near-identity mapping and only gradually mixes temporal context.
     """
 
     def __init__(
@@ -213,14 +172,6 @@ class TransformerBlock(nn.Module):
     def forward(
         self, x: torch.Tensor, use_flash_attention: bool = True
     ) -> torch.Tensor:
-        """
-        Args:
-            x: (B, T, latent_dim)
-            use_flash_attention: If False, disables Flash kernels in attention.
-        Returns:
-            (B, T, latent_dim)
-        """
-        # Gated pre-norm residual
         attn_out = self.dropout_layer(
             self.attention(self.norm1(x), use_flash_attention=use_flash_attention)
         )
@@ -233,12 +184,7 @@ class TransformerBlock(nn.Module):
 
 
 class TemporalTransformer(nn.Module):
-    """
-    Transformer with causal (autoregressive) attention using custom blocks.
-
-    Supports gated residual connections, configurable FFN width, and
-    optional Rotary Position Embeddings.
-    """
+    """Causal transformer with optional RoPE and gated residual blocks."""
 
     def __init__(
         self,
@@ -264,7 +210,6 @@ class TemporalTransformer(nn.Module):
         else:
             self.pos_embedding = None
 
-        # Stack of transformer blocks
         self.layers = nn.ModuleList(
             [
                 TransformerBlock(
@@ -285,22 +230,12 @@ class TemporalTransformer(nn.Module):
     def forward(
         self, x: torch.Tensor, use_flash_attention: bool = True
     ) -> torch.Tensor:
-        """
-        Args:
-            x: (B, T, latent_dim)
-            use_flash_attention: If False, disables Flash kernels in all blocks.
-        Returns:
-            (B, T, latent_dim)
-        """
         B, T, D = x.shape
 
         if self.pos_embedding is not None:
             x = x + self.pos_embedding[:, :T, :]
 
-        # Apply transformer layers
         for layer in self.layers:
             x = layer(x, use_flash_attention=use_flash_attention)
 
-        x = self.norm(x)
-
-        return x
+        return self.norm(x)
