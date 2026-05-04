@@ -1,4 +1,3 @@
-import copy
 import os
 import sys
 
@@ -7,7 +6,6 @@ from omegaconf import OmegaConf
 from victim.capture.a2c import capture_a2c_gradients
 from victim.capture.federated import capture_federated
 from victim.capture.ppo import capture_ppo_gradients
-from victim.capture.sac import capture_sac_exact_gradients
 from victim.capture.streaming import (
     capture_and_save_streaming,
     capture_uniform_per_scene,
@@ -54,7 +52,6 @@ if __name__ == "__main__":
 
     capture_mode = capture_cfg.get("mode", "uniform")
     steps_per_scene = capture_cfg.get("steps_per_scene", None)
-    use_exact_loss = capture_cfg.get("use_exact_loss", False)
 
     ppo_params = {
         "gamma": capture_cfg.get("gae_gamma", 0.99),
@@ -69,10 +66,6 @@ if __name__ == "__main__":
         "vf_coef": capture_cfg.get("vf_coef", 0.5),
         "ent_coef": capture_cfg.get("ent_coef", 0.01),
     }
-    sac_params = {
-        "gamma": capture_cfg.get("sac_gamma", 0.99),
-        "alpha": capture_cfg.get("sac_alpha", 0.2),
-    }
 
     try:
         if algorithm == "a2c":
@@ -86,24 +79,6 @@ if __name__ == "__main__":
                 gradient_layers=capture_cfg.get("gradient_layers"),
                 compression=capture_cfg.get("compression", "gzip"),
                 **a2c_params,
-            )
-
-        elif algorithm == "sac" and use_exact_loss:
-            target_model = copy.deepcopy(model)
-            target_model.eval()
-            target_model.requires_grad_(False)
-
-            total_steps = capture_sac_exact_gradients(
-                model=model,
-                target_model=target_model,
-                env=env,
-                save_path=capture_cfg.get("save_path"),
-                scenes=scenes,
-                steps_per_scene=steps_per_scene or 1000,
-                max_steps_per_episode=env_cfg.get("max_steps", 100),
-                gradient_layers=capture_cfg.get("gradient_layers"),
-                compression=capture_cfg.get("compression", "gzip"),
-                **sac_params,
             )
 
         elif capture_mode == "federated":
@@ -123,7 +98,6 @@ if __name__ == "__main__":
                 clip_eps=ppo_params["clip_eps"],
                 vf_coef=ppo_params["vf_coef"],
                 ent_coef=ppo_params["ent_coef"],
-                alpha=capture_cfg.get("sac_alpha", 0.2),
             )
 
         elif capture_mode == "ppo":

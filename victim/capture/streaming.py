@@ -6,7 +6,6 @@ import torch
 import torch.nn.functional as F
 
 from victim.capture.ppo import compute_gradients
-from victim.capture.sac import compute_sac_gradients
 from victim.capture.utils import create_hdf5_dataset, flatten_gradients
 from victim.environment import AI2THORNavEnv
 
@@ -22,11 +21,8 @@ def _sample_action(
     model: torch.nn.Module, obs_tensor: torch.Tensor, algorithm: str
 ) -> int:
     with torch.no_grad():
-        if algorithm in ("ppo", "a2c"):
-            logits, _ = model(obs_tensor)
-            probs = F.softmax(logits, dim=-1)
-        else:
-            _, probs = model.actor(obs_tensor)
+        logits, _ = model(obs_tensor)
+        probs = F.softmax(logits, dim=-1)
     return torch.distributions.Categorical(probs=probs).sample().item()
 
 
@@ -37,8 +33,6 @@ def _compute_probe_gradients(
     algorithm: str,
     gradient_layers: Optional[List[str]] = None,
 ) -> Dict[str, np.ndarray]:
-    if algorithm == "sac":
-        return compute_sac_gradients(model, obs_tensor, gradient_layers)
     return compute_gradients(model, obs_tensor, action, gradient_layers)
 
 

@@ -6,7 +6,6 @@ import numpy as np
 import torch
 
 from victim.models.actor_critic import ActorCritic
-from victim.models.sac import SAC
 
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -21,12 +20,9 @@ def load_model(
     num_actions: int = 5,
     algorithm: str = "ppo",
 ) -> torch.nn.Module:
-    """Load a trained victim checkpoint. Supports ppo, a2c, sac."""
+    """Load a trained victim checkpoint. Supports ppo, a2c."""
     algorithm = algorithm.lower()
-    if algorithm == "sac":
-        model = SAC(in_channels=3, num_actions=num_actions).to(device)
-    else:
-        model = ActorCritic(in_channels=3, num_actions=num_actions).to(device)
+    model = ActorCritic(in_channels=3, num_actions=num_actions).to(device)
 
     checkpoint = torch.load(checkpoint_path, map_location=device)
 

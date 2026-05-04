@@ -1,6 +1,5 @@
-"""Pre-compute colour-jitter augmented gradients for ppo, a2c, or sac datasets."""
+"""Pre-compute colour-jitter augmented gradients for ppo or a2c datasets."""
 
-import copy
 import os
 import sys
 
@@ -12,7 +11,6 @@ from tqdm import tqdm
 
 from victim.augment.a2c import augment_a2c
 from victim.augment.ppo import augment_ppo
-from victim.augment.sac import augment_sac, augment_sac_exact
 from victim.capture.utils import load_model
 
 if torch.cuda.is_available():
@@ -33,9 +31,8 @@ def augment_hdf5_dataset(
     seed: int = 42,
     jitter_kwargs: dict = None,
     loss_kwargs: dict = None,
-    target_model: torch.nn.Module = None,
 ) -> None:
-    """Augment an HDF5 gradient dataset; SAC uses exact loss when next_images is present."""
+    """Augment an HDF5 gradient dataset using the exact algorithm-specific loss."""
     if jitter_kwargs is None:
         jitter_kwargs = {}
     if loss_kwargs is None:
@@ -49,7 +46,6 @@ def augment_hdf5_dataset(
         gradient_size = f_in["gradients"].shape[1]
         image_shape = f_in["images"].shape[1:]
         metadata = dict(f_in.attrs)
-        has_next_images = "next_images" in f_in
 
     num_augmented = num_original * num_augmentations
     total_samples = num_original + num_augmented
@@ -62,15 +58,6 @@ def augment_hdf5_dataset(
     )
     print(f"  jitter={jitter_kwargs}")
 
-    sac_exact = algorithm == "sac" and has_next_images
-    if sac_exact and target_model is None:
-        target_model = copy.deepcopy(model)
-        target_model.eval()
-        target_model.requires_grad_(False)
-
-    if algorithm == "sac":
-        print(f"  SAC mode: {'exact loss' if sac_exact else 'probe loss'}")
-
     with h5py.File(output_path, "w") as f_out:
         f_out.create_dataset(
             "images",
@@ -80,15 +67,6 @@ def augment_hdf5_dataset(
             compression="gzip",
             compression_opts=4,
         )
-        if has_next_images:
-            f_out.create_dataset(
-                "next_images",
-                shape=(total_samples, *image_shape),
-                dtype=np.uint8,
-                chunks=(1, *image_shape),
-                compression="gzip",
-                compression_opts=4,
-            )
         f_out.create_dataset(
             "gradients",
             shape=(total_samples, gradient_size),
@@ -125,10 +103,6 @@ def augment_hdf5_dataset(
                     start_idx:end_idx
                 ]
                 f_out["done"][start_idx:end_idx] = f_in["done"][start_idx:end_idx]
-                if has_next_images:
-                    f_out["next_images"][start_idx:end_idx] = f_in["next_images"][
-                        start_idx:end_idx
-                    ]
 
             if algorithm == "ppo":
                 out_idx = augment_ppo(
@@ -150,31 +124,9 @@ def augment_hdf5_dataset(
                     jitter_kwargs=jitter_kwargs,
                     **loss_kwargs,
                 )
-            elif algorithm == "sac" and sac_exact:
-                out_idx = augment_sac_exact(
-                    f_in,
-                    f_out,
-                    model,
-                    target_model,
-                    out_idx=num_original,
-                    num_augmentations=num_augmentations,
-                    jitter_kwargs=jitter_kwargs,
-                    batch_size=batch_size,
-                    **loss_kwargs,
-                )
-            elif algorithm == "sac":
-                out_idx = augment_sac(
-                    f_in,
-                    f_out,
-                    model,
-                    out_idx=num_original,
-                    num_augmentations=num_augmentations,
-                    jitter_kwargs=jitter_kwargs,
-                    batch_size=batch_size,
-                )
             else:
                 raise ValueError(
-                    f"Unknown algorithm '{algorithm}'. Choose: ppo, a2c, sac"
+                    f"Unknown algorithm '{algorithm}'. Choose: ppo, a2c"
                 )
 
         for key, value in metadata.items():
@@ -186,12 +138,9 @@ def augment_hdf5_dataset(
         f_out.attrs["augmented_samples"] = num_augmented
         f_out.attrs["total_samples"] = out_idx
         f_out.attrs["augmentation_params"] = str(jitter_kwargs)
-        if algorithm in ("ppo", "a2c") or (algorithm == "sac" and sac_exact):
-            f_out.attrs["loss_type"] = f"{algorithm}_exact"
-            for k, v in loss_kwargs.items():
-                f_out.attrs[k] = v
-        elif algorithm == "sac":
-            f_out.attrs["loss_type"] = "sac_probe"
+        f_out.attrs["loss_type"] = f"{algorithm}_exact"
+        for k, v in loss_kwargs.items():
+            f_out.attrs[k] = v
 
     file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
     print(
@@ -240,10 +189,7 @@ if __name__ == "__main__":
             "ent_coef": loss_cfg.get("ent_coef", 0.01),
         }
     else:
-        loss_kwargs = {
-            "gamma": loss_cfg.get("gamma", 0.99),
-            "alpha": loss_cfg.get("alpha", 0.2),
-        }
+        raise ValueError(f"Unknown algorithm '{algorithm}'. Choose: ppo, a2c")
 
     augment_hdf5_dataset(
         input_path=data_cfg.get("input"),

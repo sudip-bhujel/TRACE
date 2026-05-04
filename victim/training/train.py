@@ -9,7 +9,6 @@ from omegaconf import OmegaConf
 from victim.environment import AI2THORNavEnv
 from victim.training.a2c import train_a2c
 from victim.training.ppo import train
-from victim.training.sac import train_sac
 from victim.training.utils import plot_results
 
 if __name__ == "__main__":
@@ -70,23 +69,6 @@ if __name__ == "__main__":
                 resume_from=train_cfg.get("resume_from"),
                 scenes=scenes,
             )
-        elif algorithm == "sac":
-            alg_cfg = cfg.get("sac", {})
-            episode_rewards = train_sac(
-                env,
-                total_steps=alg_cfg.get("total_steps", 500_000),
-                batch_size=alg_cfg.get("batch_size", 256),
-                buffer_size=alg_cfg.get("buffer_size", 100_000),
-                learning_starts=alg_cfg.get("learning_starts", 5_000),
-                gamma=alg_cfg.get("gamma", 0.99),
-                tau=alg_cfg.get("tau", 0.005),
-                lr=alg_cfg.get("learning_rate", 3e-4),
-                target_entropy_ratio=alg_cfg.get("target_entropy_ratio", 0.98),
-                train_freq=alg_cfg.get("train_freq", 1),
-                save_dir=save_dir,
-                resume_from=train_cfg.get("resume_from"),
-                scenes=scenes,
-            )
         elif algorithm == "a2c":
             alg_cfg = cfg.get("a2c", {})
             episode_rewards = train_a2c(
@@ -104,7 +86,7 @@ if __name__ == "__main__":
                 scenes=scenes,
             )
         else:
-            raise ValueError(f"Unknown algorithm '{algorithm}'. Choose: ppo, a2c, sac")
+            raise ValueError(f"Unknown algorithm '{algorithm}'. Choose: ppo, a2c")
     finally:
         env.close()
 

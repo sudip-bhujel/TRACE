@@ -1,4 +1,3 @@
-import copy
 import os
 from typing import List, Optional, Tuple
 
@@ -8,7 +7,6 @@ import torch
 import torch.nn.functional as F
 
 from victim.capture.ppo import _client_gradient_a2c, _client_gradient_ppo
-from victim.capture.sac import _client_gradient_sac
 from victim.environment import AI2THORNavEnv
 from victim.models.actor_critic import ActorCritic, compute_gae
 
@@ -82,45 +80,6 @@ def _collect_ppo_rollout(
     )
 
 
-def _collect_offpolicy_batch(
-    model: torch.nn.Module,
-    env: AI2THORNavEnv,
-    rollout_steps: int,
-    scene: Optional[str] = None,
-) -> Tuple[
-    torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, np.ndarray
-]:
-    obs = env.reset(scene=scene) if scene else env.reset()
-    obs_list, act_list, rew_list, nobs_list, done_list = [], [], [], [], []
-    images: List[np.ndarray] = []
-
-    for _ in range(rollout_steps):
-        images.append(obs)
-        obs_t = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-        with torch.no_grad():
-            _, probs = model.actor(obs_t)
-        action = torch.distributions.Categorical(probs=probs).sample().item()
-
-        next_obs, reward, done, _ = env.step(action)
-        obs_list.append(obs)
-        act_list.append(action)
-        rew_list.append(reward)
-        nobs_list.append(next_obs)
-        done_list.append(float(done))
-        obs = (
-            next_obs if not done else (env.reset(scene=scene) if scene else env.reset())
-        )
-
-    return (
-        torch.tensor(np.stack(obs_list), dtype=torch.float32, device=device),
-        torch.tensor(act_list, dtype=torch.long, device=device),
-        torch.tensor(rew_list, dtype=torch.float32, device=device),
-        torch.tensor(np.stack(nobs_list), dtype=torch.float32, device=device),
-        torch.tensor(done_list, dtype=torch.float32, device=device),
-        np.stack(images),
-    )
-
-
 def capture_federated(
     model: torch.nn.Module,
     env: AI2THORNavEnv,
@@ -137,13 +96,8 @@ def capture_federated(
     clip_eps: float = 0.2,
     vf_coef: float = 0.5,
     ent_coef: float = 0.01,
-    alpha: float = 0.2,
 ) -> int:
     """Simulate federated rounds and store one client gradient per record."""
-    target_model = copy.deepcopy(model) if algorithm == "sac" else None
-    if target_model is not None:
-        target_model.requires_grad_(False)
-
     print(f"[FL Capture] {algorithm.upper()} probe")
     scene0 = scenes[0]
     if algorithm == "ppo":
@@ -176,24 +130,8 @@ def capture_federated(
             ent_coef,
             gradient_layers,
         )
-    elif algorithm == "sac":
-        obs_t, act_t, rew_t, nobs_t, done_t, imgs = _collect_offpolicy_batch(
-            model, env, rollout_steps, scene=scene0
-        )
-        grad_probe = _client_gradient_sac(
-            model,
-            target_model,
-            obs_t,
-            act_t,
-            rew_t,
-            nobs_t,
-            done_t,
-            gamma,
-            alpha,
-            gradient_layers,
-        )
     else:
-        raise ValueError(f"Unknown algorithm '{algorithm}'. Choose: ppo, a2c, sac")
+        raise ValueError(f"Unknown algorithm '{algorithm}'. Choose: ppo, a2c")
 
     grad_dim = grad_probe.shape[0]
     img_shape = imgs.shape[1:]
@@ -278,24 +216,6 @@ def capture_federated(
                     )
                     actions_np = act_t.cpu().numpy().astype(np.int8)
                     rewards_np = ret_t.cpu().numpy().astype(np.float32)
-                elif algorithm == "sac":
-                    obs_t, act_t, rew_t, nobs_t, done_t, images = (
-                        _collect_offpolicy_batch(model, env, rollout_steps, scene=scene)
-                    )
-                    grad = _client_gradient_sac(
-                        model,
-                        target_model,
-                        obs_t,
-                        act_t,
-                        rew_t,
-                        nobs_t,
-                        done_t,
-                        gamma,
-                        alpha,
-                        gradient_layers,
-                    )
-                    actions_np = act_t.cpu().numpy().astype(np.int8)
-                    rewards_np = rew_t.cpu().numpy().astype(np.float32)
 
                 f["gradients"][record_idx] = grad.astype(np.float16)
                 f["images"][record_idx] = images
