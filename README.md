@@ -1,6 +1,6 @@
 # Temporal Gradient Inversion for Private Trajectory Reconstruction in Embodied Reinforcement Learning
 
-Gradient inversion attack framework for reinforcement learning agents in AI2-THOR visual navigation environments. TRACE reconstructs observations and recovers actions from intercepted policy gradients using an autoregressive transformer-based architecture.
+Gradient inversion attack framework for reinforcement learning agents in embodied visual navigation environments. We introduce **T**emporal **R**econstruction **A**ttack on **C**onsecutive **E**ncodings (**TRACE**) that reconstructs observations and recovers actions from intercepted policy gradients using an autoregressive transformer-based architecture.
 
 ![TRACE](assets/hero.png)
 
