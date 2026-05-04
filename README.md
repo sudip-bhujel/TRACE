@@ -1,6 +1,8 @@
-# TRACE: Temporal Gradient Inversion for Reconstructing Private Trajectories in Embodied AI
+# Temporal Gradient Inversion for Private Trajectory Reconstruction in Embodied Reinforcement Learning
 
 Gradient inversion attack framework for reinforcement learning agents in AI2-THOR visual navigation environments. TRACE reconstructs observations and recovers actions from intercepted policy gradients using an autoregressive transformer-based architecture.
+
+![TRACE](assets/hero.png)
 
 ## Project Structure
 
@@ -40,9 +42,6 @@ trace/
 ## Installation
 
 ```bash
-# Clone the repository
-git clone <repo-url> && cd inversion
-
 # Install dependencies with uv
 uv sync
 ```
