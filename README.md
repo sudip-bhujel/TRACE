@@ -39,6 +39,8 @@ trace/
 - [uv](https://docs.astral.sh/uv/) package manager
 - CUDA-capable GPU (recommended: A100 40 GB+)
 
+Training is performed on multi-GPU SLURM clusters. Single-GPU training is supported with reduced batch size by adjusting `training.batch_size` and `training.accumulation_steps` in the config.
+
 ## Installation
 
 ```bash
@@ -46,9 +48,9 @@ trace/
 uv sync
 ```
 
-## Usage
+## Data Generation
 
-The full pipeline follows four stages: **Train Victim → Capture Gradients → Augment Data → Train Attacker**.
+The full pipeline generates HDF5 trajectory data under `trajectory_data/`. Follow stages 1–3 below to produce the training and test sets from scratch.
 
 ### 1. Train Victim Agent
 
@@ -88,48 +90,106 @@ uv run -m victim.augment.augment victim/config/ppo/augment_train.yaml
 uv run -m victim.augment.augment victim/config/a2c/augment_train.yaml
 ```
 
-### 4. Train TRACE
+The generated HDF5 files are expected at the paths specified in each experiment config (e.g., `trajectory_data/ppo/gradients_train_augmented.h5`).
+
+## Training
+
+### Train TRACE
 
 Train the autoregressive gradient inversion model.
 
 **Single GPU:**
 
 ```bash
-python -m attacker.training.train attacker/config/ppo/base.yaml
+uv run -m attacker.training.train attacker/config/ppo/base.yaml
 ```
 
 **Distributed (multi-GPU):**
 
 ```bash
 NGPUS=4  # adjust to your setup
-python -m torch.distributed.run \
+uv run -m torch.distributed.run \
     --standalone \
     --nproc_per_node=$NGPUS \
     -m attacker.training.train \
     attacker/config/ppo/base.yaml
 ```
 
-### 5. Evaluate
+### Ablation Studies
+
+**Sequence length ablation** (T = 1, 8, 16, 32, 64):
 
 ```bash
-uv run -m attacker.evaluation.evaluate attacker/config/eval.yaml
+uv run -m attacker.training.train attacker/config/ppo/ablation/train_t1.yaml
+uv run -m attacker.training.train attacker/config/ppo/ablation/train_t8.yaml
+uv run -m attacker.training.train attacker/config/ppo/ablation/train_t16.yaml
+uv run -m attacker.training.train attacker/config/ppo/ablation/train_t32.yaml
+uv run -m attacker.training.train attacker/config/ppo/ablation/train_t64.yaml
 ```
 
-### 6. Few-Shot Adaptation
+**Loss component ablation:**
+
+```bash
+uv run -m attacker.training.train attacker/config/ppo/ablation/train_no_mse.yaml
+uv run -m attacker.training.train attacker/config/ppo/ablation/train_no_l1.yaml
+uv run -m attacker.training.train attacker/config/ppo/ablation/train_no_lpips.yaml
+uv run -m attacker.training.train attacker/config/ppo/ablation/train_no_action.yaml
+```
+
+**Gradient subspace ablation:**
+
+```bash
+uv run -m attacker.training.train attacker/config/ppo/ablation/train_cnn_only.yaml
+uv run -m attacker.training.train attacker/config/ppo/ablation/train_fc_only.yaml
+uv run -m attacker.training.train attacker/config/ppo/ablation/train_heads_only.yaml
+```
+
+### Few-Shot Adaptation
 
 Fine-tune a pretrained model on a small fraction of out-of-distribution data:
 
 ```bash
 # 10% adaptation on PPO gradients
-python -m attacker.training.train attacker/config/ppo/adaptation/10.yaml
+uv run -m attacker.training.train attacker/config/ppo/adaptation/10.yaml
 
 # 10% adaptation on A2C gradients
-python -m attacker.training.train attacker/config/a2c/adaptation/10.yaml
+uv run -m attacker.training.train attacker/config/a2c/adaptation/10.yaml
 ```
 
 Available fractions: `10`, `20`, `30`, `40`, `50` (percent).
 
-### 7. Defense Evaluation
+## Evaluation
+
+```bash
+uv run -m attacker.evaluation.evaluate attacker/config/ppo/eval.yaml
+```
+
+### Metrics
+
+| Metric          | Description                                              |
+| --------------- | -------------------------------------------------------- |
+| PSNR            | Peak Signal-to-Noise Ratio (dB)                          |
+| SSIM            | Structural Similarity Index                              |
+| LPIPS           | Learned Perceptual Image Patch Similarity (VGG backbone) |
+| Action Accuracy | Top-1 classification accuracy over discrete actions      |
+
+All image metrics are computed per-frame and averaged across the test set. Per-timestep breakdowns are also reported.
+
+### Baselines
+
+Four baselines are implemented under `attacker/baselines/`:
+
+| Baseline                 | File                    | Reference                    |
+| ------------------------ | ----------------------- | ---------------------------- |
+| DLG                      | `dlg.py`                | Zhu et al., NeurIPS 2019     |
+| Inverting Gradients (IG) | `ig.py`                 | Geiping et al., NeurIPS 2020 |
+| Learning to Invert (LtI) | `learning_to_invert.py` | Wu et al., UAI 2023          |
+
+```bash
+uv run -m attacker.evaluation.evaluate attacker/config/ppo/eval_baselines.yaml
+```
+
+### Defense Evaluation
 
 Evaluate reconstruction quality under gradient defense mechanisms (quantization, pruning, noise injection, DP-SGD):
 
@@ -163,3 +223,7 @@ We gratefully acknowledge the authors of the following open-source repositories,
 - **DLG** — [Deep Leakage from Gradients](https://github.com/mit-han-lab/dlg)
 - **IG** — [Inverting Gradients](https://github.com/JonasGeiping/invertinggradients)
 - **Learning-to-Invert** — [Learning to Invert](https://github.com/wrh14/Learning_to_Invert)
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
