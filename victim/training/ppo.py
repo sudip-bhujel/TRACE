@@ -1,7 +1,7 @@
 import os
 import random
 from collections import defaultdict
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 import torch
@@ -9,14 +9,21 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from victim.environment import AI2THORNavEnv
-from victim.models.actor_critic import ActorCritic, compute_gae
+from victim.models.actor_critic import build_actor_critic, compute_gae
 
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-elif torch.backends.mps.is_available():
-    device = torch.device("mps")
-else:
-    device = torch.device("cpu")
+def _resolve_device(requested: Optional[str]) -> torch.device:
+    if requested and requested != "auto":
+        resolved = torch.device(requested)
+        if resolved.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("CUDA was requested but is not available")
+        if resolved.type == "mps" and not torch.backends.mps.is_available():
+            raise RuntimeError("MPS was requested but is not available")
+        return resolved
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
 def train(
@@ -35,12 +42,32 @@ def train(
     save_dir: str = "ckpts",
     resume_from: str = None,
     scenes: List[str] = None,
+    architecture: str = "cnn",
+    device_name: str = "auto",
 ) -> List[float]:
     """Train a PPO agent and return per-episode rewards."""
     num_actions = env.action_space_n
+    run_device = _resolve_device(device_name)
+    print(f"Using device: {run_device}")
 
-    model = ActorCritic(in_channels=3, num_actions=num_actions).to(device)
+    model = build_actor_critic(
+        architecture=architecture,
+        in_channels=3,
+        num_actions=num_actions,
+    ).to(run_device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
+    checkpoint_metadata = {
+        "model_config": {
+            "architecture": model.architecture,
+            "num_actions": model.num_actions,
+            "in_channels": 3,
+        },
+        "environment_config": {
+            "action_set": env.action_set,
+            "action_names": env.action_names,
+            "image_size": list(env.image_size),
+        },
+    }
 
     os.makedirs(save_dir, exist_ok=True)
     global_step = 0
@@ -53,7 +80,20 @@ def train(
 
     if resume_from and os.path.exists(resume_from):
         print(f"Resuming from checkpoint: {resume_from}")
-        checkpoint = torch.load(resume_from, map_location=device)
+        checkpoint = torch.load(resume_from, map_location=run_device)
+        saved_model_cfg = checkpoint.get("model_config", {})
+        saved_architecture = saved_model_cfg.get("architecture")
+        saved_num_actions = saved_model_cfg.get("num_actions")
+        if saved_architecture and saved_architecture != model.architecture:
+            raise ValueError(
+                f"Checkpoint architecture is '{saved_architecture}', "
+                f"but config requested '{model.architecture}'"
+            )
+        if saved_num_actions and saved_num_actions != model.num_actions:
+            raise ValueError(
+                f"Checkpoint has {saved_num_actions} actions, "
+                f"but environment exposes {model.num_actions}"
+            )
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         global_step = checkpoint.get("global_step", 0)
@@ -76,13 +116,13 @@ def train(
 
         for _ in range(steps_per_update):
             obs_tensor = torch.tensor(
-                obs, dtype=torch.float32, device=device
+                obs, dtype=torch.float32, device=run_device
             ).unsqueeze(0)
             logits, value = model(obs_tensor)
             probs = F.softmax(logits, dim=-1)
             dist = torch.distributions.Categorical(probs)
             action = dist.sample().item()
-            logp = dist.log_prob(torch.tensor(action, device=device)).item()
+            logp = dist.log_prob(torch.tensor(action, device=run_device)).item()
 
             next_obs, reward, done, info = env.step(action)
 
@@ -110,7 +150,7 @@ def train(
                 obs = next_obs
 
         last_obs_tensor = torch.tensor(
-            obs, dtype=torch.float32, device=device
+            obs, dtype=torch.float32, device=run_device
         ).unsqueeze(0)
         _, last_val = model(last_obs_tensor)
         values_for_gae = values_list + [last_val.item()]
@@ -119,11 +159,19 @@ def train(
             rewards_list, values_for_gae, dones_list, gamma=gamma, lam=lam
         )
 
-        obs_batch = torch.tensor(np.stack(obs_list), dtype=torch.float32, device=device)
-        actions_batch = torch.tensor(actions_list, dtype=torch.long, device=device)
-        old_logp_batch = torch.tensor(logp_list, dtype=torch.float32, device=device)
-        returns_batch = torch.tensor(returns, dtype=torch.float32, device=device)
-        adv_batch = torch.tensor(advantages, dtype=torch.float32, device=device)
+        obs_batch = torch.tensor(
+            np.stack(obs_list), dtype=torch.float32, device=run_device
+        )
+        actions_batch = torch.tensor(
+            actions_list, dtype=torch.long, device=run_device
+        )
+        old_logp_batch = torch.tensor(
+            logp_list, dtype=torch.float32, device=run_device
+        )
+        returns_batch = torch.tensor(
+            returns, dtype=torch.float32, device=run_device
+        )
+        adv_batch = torch.tensor(advantages, dtype=torch.float32, device=run_device)
         adv_batch = (adv_batch - adv_batch.mean()) / (
             adv_batch.std(unbiased=False) + 1e-8
         )
@@ -198,6 +246,7 @@ def train(
                     "vf_coef": vf_coef,
                     "max_grad_norm": max_grad_norm,
                 },
+                **checkpoint_metadata,
             }
             checkpoint_path = os.path.join(save_dir, f"ppo_ai2thor_{update}.pt")
             torch.save(checkpoint, checkpoint_path)
@@ -222,6 +271,7 @@ def train(
             "vf_coef": vf_coef,
             "max_grad_norm": max_grad_norm,
         },
+        **checkpoint_metadata,
     }
     torch.save(final_checkpoint, os.path.join(save_dir, "ppo_ai2thor_final.pt"))
     print("Training finished, model saved.")

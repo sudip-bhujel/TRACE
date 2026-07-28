@@ -1,0 +1,15 @@
+# PPO gradient capture for the IMPALA-CNN/Nav5 training split.
+# Usage: uv run -m victim.capture.capture victim/config/ppo/impala_nav5/capture_train.yaml
+
+_base_: ../capture_train.yaml
+
+environment:
+  action_set: nav5
+
+model:
+  checkpoint: ckpts/victim/ppo/impala_nav5/ppo_ai2thor_final.pt
+  architecture: impala_cnn
+  num_actions: 5
+
+capture:
+  save_path: trajectory_data/ppo/impala_nav5/gradients_train.h5

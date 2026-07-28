@@ -5,6 +5,7 @@ algorithm: ppo
 
 model:
   checkpoint: "ckpts/victim/ppo/ppo_ai2thor_final.pt"
+  architecture: cnn
   num_actions: 5
 
 data:

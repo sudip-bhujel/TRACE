@@ -13,17 +13,32 @@ class AI2THORNavEnv:
     Gym-like AI2-THOR point-navigation environment.
 
     Observations: RGB image (3, 84, 84), uint8.
-    Actions: 0=MoveAhead, 1=RotateLeft(15), 2=RotateRight(15), 3=LookDown(15), 4=LookUp(15).
+    The default ``nav5`` action set preserves the original five action indices.
+    ``nav8`` appends MoveBack, MoveLeft, and MoveRight.
     Reward: -0.01 per step, +1.0 if the agent reaches the target.
     """
 
-    ACTIONS = [
-        {"action": "MoveAhead"},
-        {"action": "RotateLeft", "degrees": 15},
-        {"action": "RotateRight", "degrees": 15},
-        {"action": "LookDown", "degrees": 15},
-        {"action": "LookUp", "degrees": 15},
-    ]
+    ACTION_SETS = {
+        "nav5": [
+            {"action": "MoveAhead"},
+            {"action": "RotateLeft", "degrees": 15},
+            {"action": "RotateRight", "degrees": 15},
+            {"action": "LookDown", "degrees": 15},
+            {"action": "LookUp", "degrees": 15},
+        ],
+        "nav8": [
+            {"action": "MoveAhead"},
+            {"action": "RotateLeft", "degrees": 15},
+            {"action": "RotateRight", "degrees": 15},
+            {"action": "LookDown", "degrees": 15},
+            {"action": "LookUp", "degrees": 15},
+            {"action": "MoveBack"},
+            {"action": "MoveLeft"},
+            {"action": "MoveRight"},
+        ],
+    }
+    # Backward-compatible alias for code that reads the original class attribute.
+    ACTIONS = ACTION_SETS["nav5"]
 
     def __init__(
         self,
@@ -32,12 +47,20 @@ class AI2THORNavEnv:
         max_steps: int = 200,
         headless: bool = True,
         grid_size: float = 0.25,
+        action_set: str = "nav5",
     ):
+        if action_set not in self.ACTION_SETS:
+            choices = ", ".join(sorted(self.ACTION_SETS))
+            raise ValueError(f"Unknown action_set '{action_set}'. Choose: {choices}")
+
         self.scene = scene
         self.image_size = image_size
         self.max_steps = max_steps
         self.grid_size = grid_size
         self.step_count = 0
+        self.action_set = action_set
+        self.actions = [dict(action) for action in self.ACTION_SETS[action_set]]
+        self.action_names = [action["action"] for action in self.actions]
 
         self.controller = Controller(
             scene=scene,
@@ -50,7 +73,7 @@ class AI2THORNavEnv:
         except Exception:
             pass
 
-        self.action_space_n = len(self.ACTIONS)
+        self.action_space_n = len(self.actions)
         self.observation_shape = (3, image_size[0], image_size[1])
 
         self.last_event = None
@@ -155,15 +178,19 @@ class AI2THORNavEnv:
         print("Controller restarted.")
 
     def step(self, action: int) -> Tuple[np.ndarray, float, bool, Dict]:
+        if action < 0 or action >= self.action_space_n:
+            raise ValueError(
+                f"Action index {action} is outside [0, {self.action_space_n})"
+            )
         self.step_count += 1
 
         try:
-            self.last_event = self.controller.step(self.ACTIONS[action])
+            self.last_event = self.controller.step(self.actions[action])
         except Exception as e:
             print(f"Controller error in step: {e}")
             self._restart_controller()
             try:
-                self.last_event = self.controller.step(self.ACTIONS[action])
+                self.last_event = self.controller.step(self.actions[action])
             except Exception as e2:
                 print(f"Controller error in retry step: {e2}")
                 self.last_event = self.controller.step({"action": "Pass"})

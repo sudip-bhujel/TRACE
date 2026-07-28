@@ -1,0 +1,13 @@
+# PPO gradient augmentation for the CNN/Nav8 held-out test split.
+# Usage: uv run -m victim.augment.augment victim/config/ppo/cnn_nav8/augment_test.yaml
+
+_base_: ../augment_test.yaml
+
+model:
+  checkpoint: ckpts/victim/ppo/cnn_nav8/ppo_ai2thor_final.pt
+  architecture: cnn
+  num_actions: 8
+
+data:
+  input: trajectory_data/ppo/cnn_nav8/gradients_test.h5
+  output: trajectory_data/ppo/cnn_nav8/gradients_test_augmented.h5

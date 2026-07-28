@@ -4,8 +4,8 @@ import sys
 
 import numpy as np
 import torch
-from omegaconf import OmegaConf
 
+from victim.config_utils import load_config
 from victim.environment import AI2THORNavEnv
 from victim.training.a2c import train_a2c
 from victim.training.ppo import train
@@ -14,10 +14,11 @@ from victim.training.utils import plot_results
 if __name__ == "__main__":
     assert len(sys.argv) > 1, "Usage: python -m victim.training.train <config_path>"
 
-    cfg = OmegaConf.load(sys.argv[1])
+    cfg = load_config(sys.argv[1], sys.argv[2:])
 
     algorithm = cfg.get("algorithm", "ppo").lower()
     env_cfg = cfg.get("environment", {})
+    model_cfg = cfg.get("model", {})
     train_cfg = cfg.get("training", {})
     output_cfg = cfg.get("output", {})
 
@@ -39,7 +40,9 @@ if __name__ == "__main__":
     os.makedirs(os.path.dirname(plot_path) or ".", exist_ok=True)
 
     print(
-        f"Victim {algorithm.upper()} training | scenes={scenes} | save_dir={save_dir}"
+        f"Victim {algorithm.upper()} training | architecture={model_cfg.get('architecture', 'cnn')} "
+        f"| action_set={env_cfg.get('action_set', 'nav5')} | scenes={scenes} "
+        f"| save_dir={save_dir}"
     )
 
     env = AI2THORNavEnv(
@@ -47,6 +50,7 @@ if __name__ == "__main__":
         image_size=tuple(env_cfg.get("image_size", [84, 84])),
         max_steps=env_cfg.get("max_steps", 200),
         headless=env_cfg.get("headless", False),
+        action_set=env_cfg.get("action_set", "nav5"),
     )
 
     try:
@@ -68,6 +72,8 @@ if __name__ == "__main__":
                 save_dir=save_dir,
                 resume_from=train_cfg.get("resume_from"),
                 scenes=scenes,
+                architecture=model_cfg.get("architecture", "cnn"),
+                device_name=cfg.get("device", "auto"),
             )
         elif algorithm == "a2c":
             alg_cfg = cfg.get("a2c", {})

@@ -1,3 +1,4 @@
+import os
 from typing import Dict, List, Optional
 
 import h5py
@@ -14,12 +15,23 @@ from victim.capture.utils import (
 from victim.environment import AI2THORNavEnv
 from victim.models.actor_critic import ActorCritic
 
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-elif torch.backends.mps.is_available():
-    device = torch.device("mps")
-else:
-    device = torch.device("cpu")
+
+def _infer_written_steps(gradients: h5py.Dataset) -> int:
+    """Find the first unwritten row in a contiguous, preallocated gradient set."""
+    total_rows = gradients.shape[0]
+    if total_rows == 0 or not np.any(gradients[0]):
+        return 0
+    if np.any(gradients[total_rows - 1]):
+        return total_rows
+
+    low, high = 1, total_rows - 1
+    while low < high:
+        mid = (low + high) // 2
+        if np.any(gradients[mid]):
+            low = mid + 1
+        else:
+            high = mid
+    return low
 
 
 def compute_gradients(
@@ -36,7 +48,7 @@ def compute_gradients(
     probs = F.softmax(logits, dim=-1)
     dist = torch.distributions.Categorical(probs)
 
-    log_prob = dist.log_prob(torch.tensor([action], device=device))
+    log_prob = dist.log_prob(torch.tensor([action], device=observation.device))
     loss = -log_prob.mean() + 0.5 * value.mean()
     loss.backward()
 
@@ -164,16 +176,19 @@ def capture_ppo_gradients(
     ent_coef: float = 0.01,
 ) -> int:
     """Capture per-step PPO gradients from a frozen checkpoint."""
+    model_device = next(model.parameters()).device
     obs = env.reset()
-    obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
-    action_tensor = torch.tensor(0, dtype=torch.long, device=device)
+    obs_tensor = torch.tensor(
+        obs, dtype=torch.float32, device=model_device
+    ).unsqueeze(0)
+    action_tensor = torch.tensor(0, dtype=torch.long, device=model_device)
     test_grads = compute_ppo_gradients(
         model=model,
         observation=obs_tensor,
         action=action_tensor,
-        old_log_prob=torch.tensor(0.0, device=device),
-        advantage=torch.tensor(1.0, device=device),
-        returns=torch.tensor(1.0, device=device),
+        old_log_prob=torch.tensor(0.0, device=model_device).unsqueeze(0),
+        advantage=torch.tensor(1.0, device=model_device).unsqueeze(0),
+        returns=torch.tensor(1.0, device=model_device).unsqueeze(0),
         clip_eps=clip_eps,
         vf_coef=vf_coef,
         ent_coef=ent_coef,
@@ -216,14 +231,16 @@ def capture_ppo_gradients(
 
             while not done and ep_steps < max_steps:
                 obs_tensor = torch.tensor(
-                    obs, dtype=torch.float32, device=device
+                    obs, dtype=torch.float32, device=model_device
                 ).unsqueeze(0)
                 with torch.no_grad():
                     logits, value = model(obs_tensor)
                     probs = F.softmax(logits, dim=-1)
                     dist = torch.distributions.Categorical(probs)
                     action = dist.sample().item()
-                    log_prob = dist.log_prob(torch.tensor(action, device=device)).item()
+                    log_prob = dist.log_prob(
+                        torch.tensor(action, device=model_device)
+                    ).item()
 
                 next_obs, reward, done, info = env.step(action)
                 ep_reward += reward
@@ -243,7 +260,7 @@ def capture_ppo_gradients(
             else:
                 with torch.no_grad():
                     next_obs_tensor = torch.tensor(
-                        obs, dtype=torch.float32, device=device
+                        obs, dtype=torch.float32, device=model_device
                     ).unsqueeze(0)
                     _, next_val = model(next_obs_tensor)
                     bootstrap_value = next_val.item()
@@ -261,21 +278,27 @@ def capture_ppo_gradients(
                 step_obs_tensor = torch.tensor(
                     ppo_buffer.obs_list[step_in_episode],
                     dtype=torch.float32,
-                    device=device,
+                    device=model_device,
                 ).unsqueeze(0)
                 step_action_tensor = torch.tensor(
-                    ppo_buffer.actions[step_in_episode], dtype=torch.long, device=device
+                    ppo_buffer.actions[step_in_episode],
+                    dtype=torch.long,
+                    device=model_device,
                 )
                 step_old_logp_tensor = torch.tensor(
                     ppo_buffer.log_probs[step_in_episode],
                     dtype=torch.float32,
-                    device=device,
+                    device=model_device,
                 ).unsqueeze(0)
                 step_advantage_tensor = torch.tensor(
-                    advantages[step_in_episode], dtype=torch.float32, device=device
+                    advantages[step_in_episode],
+                    dtype=torch.float32,
+                    device=model_device,
                 ).unsqueeze(0)
                 step_return_tensor = torch.tensor(
-                    returns[step_in_episode], dtype=torch.float32, device=device
+                    returns[step_in_episode],
+                    dtype=torch.float32,
+                    device=model_device,
                 ).unsqueeze(0)
 
                 grads = compute_ppo_gradients(
@@ -338,5 +361,258 @@ def capture_ppo_gradients(
         grad_names = sorted(test_grads.keys())
         f.attrs["gradient_names"] = [n.encode() for n in grad_names]
         f.attrs["gradient_shapes"] = [str(test_grads[n].shape) for n in grad_names]
+
+    return step_idx
+
+
+def capture_ppo_uniform_per_scene(
+    model: ActorCritic,
+    env: AI2THORNavEnv,
+    save_path: str,
+    scenes: List[str],
+    steps_per_scene: int = 1000,
+    max_steps_per_episode: int = 100,
+    gradient_layers: Optional[List[str]] = None,
+    compression: str = "gzip",
+    gamma: float = 0.99,
+    lam: float = 0.95,
+    clip_eps: float = 0.2,
+    vf_coef: float = 0.5,
+    ent_coef: float = 0.01,
+    resume: bool = False,
+) -> int:
+    """Capture a fixed number of exact per-step PPO gradients from each scene."""
+    model_device = next(model.parameters()).device
+    obs = env.reset(scene=scenes[0])
+    obs_tensor = torch.tensor(
+        obs, dtype=torch.float32, device=model_device
+    ).unsqueeze(0)
+    test_grads = compute_ppo_gradients(
+        model=model,
+        observation=obs_tensor,
+        action=torch.tensor(0, dtype=torch.long, device=model_device),
+        old_log_prob=torch.tensor(0.0, device=model_device).unsqueeze(0),
+        advantage=torch.tensor(1.0, device=model_device).unsqueeze(0),
+        returns=torch.tensor(1.0, device=model_device).unsqueeze(0),
+        clip_eps=clip_eps,
+        vf_coef=vf_coef,
+        ent_coef=ent_coef,
+        gradient_layers=gradient_layers,
+    )
+    gradient_size = len(flatten_gradients(test_grads))
+    total_steps = steps_per_scene * len(scenes)
+
+    print("Exact PPO Gradient Capture (uniform per scene)")
+    print(
+        f"  {steps_per_scene} steps x {len(scenes)} scenes = {total_steps:,} total"
+    )
+    print(f"  Gradient size: {gradient_size:,}")
+
+    if resume:
+        if not os.path.exists(save_path):
+            raise FileNotFoundError(
+                f"Cannot resume capture because '{save_path}' does not exist"
+            )
+        with h5py.File(save_path, "r") as existing:
+            required_datasets = {
+                "images",
+                "gradients",
+                "actions",
+                "rewards",
+                "episode_ids",
+                "done",
+                "old_log_probs",
+                "advantages",
+                "returns",
+            }
+            missing = required_datasets.difference(existing.keys())
+            if missing:
+                raise ValueError(
+                    "Cannot resume capture; HDF5 file is missing datasets: "
+                    + ", ".join(sorted(missing))
+                )
+            if existing["gradients"].shape != (total_steps, gradient_size):
+                raise ValueError(
+                    "Cannot resume capture; existing gradient shape "
+                    f"{existing['gradients'].shape} does not match "
+                    f"{(total_steps, gradient_size)}"
+                )
+
+            recorded_steps = existing.attrs.get("completed_steps")
+            if recorded_steps is not None:
+                recorded_steps = int(recorded_steps)
+            if (
+                recorded_steps is None
+                or recorded_steps < 0
+                or recorded_steps > total_steps
+                or (
+                    recorded_steps < total_steps
+                    and np.any(existing["gradients"][recorded_steps])
+                )
+            ):
+                step_idx = _infer_written_steps(existing["gradients"])
+            else:
+                step_idx = recorded_steps
+
+            episode_idx = (
+                int(existing["episode_ids"][step_idx - 1]) + 1
+                if step_idx > 0
+                else 0
+            )
+        print(
+            f"  Resuming at row {step_idx:,}/{total_steps:,} "
+            f"(scene {step_idx // steps_per_scene + 1}, "
+            f"step {step_idx % steps_per_scene})"
+        )
+    else:
+        create_hdf5_dataset(
+            save_path,
+            num_steps=total_steps,
+            gradient_size=gradient_size,
+            image_shape=obs.shape,
+            compression=compression,
+            with_ppo_targets=True,
+        )
+        step_idx = 0
+        episode_idx = 0
+
+    episode_rewards = []
+
+    with h5py.File(save_path, "a") as f:
+        f.attrs["completed_steps"] = step_idx
+        start_scene_idx = min(step_idx // steps_per_scene, len(scenes))
+
+        for scene_idx in range(start_scene_idx, len(scenes)):
+            scene = scenes[scene_idx]
+            scene_steps = max(0, step_idx - scene_idx * steps_per_scene)
+            print(
+                f"\n[Scene {scene_idx + 1}/{len(scenes)}] {scene}: "
+                f"capturing {steps_per_scene - scene_steps} remaining exact PPO steps..."
+            )
+
+            while scene_steps < steps_per_scene:
+                remaining = steps_per_scene - scene_steps
+                rollout_limit = min(max_steps_per_episode, remaining)
+                ppo_buffer = PPOGradientBuffer(gamma=gamma, lam=lam)
+                obs = env.reset(scene=scene)
+                done = False
+                ep_reward = 0.0
+
+                while not done and len(ppo_buffer) < rollout_limit:
+                    obs_tensor = torch.tensor(
+                        obs, dtype=torch.float32, device=model_device
+                    ).unsqueeze(0)
+                    with torch.no_grad():
+                        logits, value = model(obs_tensor)
+                        probs = F.softmax(logits, dim=-1)
+                        dist = torch.distributions.Categorical(probs)
+                        action = dist.sample().item()
+                        log_prob = dist.log_prob(
+                            torch.tensor(action, device=model_device)
+                        ).item()
+
+                    next_obs, reward, done, _info = env.step(action)
+                    ppo_buffer.add(
+                        obs=obs,
+                        action=action,
+                        reward=reward,
+                        done=done,
+                        value=value.item(),
+                        log_prob=log_prob,
+                    )
+                    obs = next_obs
+                    ep_reward += reward
+
+                if done:
+                    bootstrap_value = 0.0
+                else:
+                    with torch.no_grad():
+                        next_obs_tensor = torch.tensor(
+                            obs, dtype=torch.float32, device=model_device
+                        ).unsqueeze(0)
+                        _, next_value = model(next_obs_tensor)
+                        bootstrap_value = next_value.item()
+
+                advantages, returns = ppo_buffer.compute_gae_and_returns(
+                    next_value=bootstrap_value
+                )
+                if len(advantages) > 1:
+                    adv_array = np.asarray(advantages)
+                    advantages = list(
+                        (adv_array - adv_array.mean()) / (adv_array.std() + 1e-8)
+                    )
+
+                for step_in_episode in range(len(ppo_buffer)):
+                    step_obs = torch.tensor(
+                        ppo_buffer.obs_list[step_in_episode],
+                        dtype=torch.float32,
+                        device=model_device,
+                    ).unsqueeze(0)
+                    step_action = torch.tensor(
+                        ppo_buffer.actions[step_in_episode],
+                        dtype=torch.long,
+                        device=model_device,
+                    )
+                    old_log_prob = ppo_buffer.log_probs[step_in_episode]
+                    advantage = advantages[step_in_episode]
+                    return_value = returns[step_in_episode]
+
+                    grads = compute_ppo_gradients(
+                        model=model,
+                        observation=step_obs,
+                        action=step_action,
+                        old_log_prob=torch.tensor(
+                            old_log_prob, dtype=torch.float32, device=model_device
+                        ).unsqueeze(0),
+                        advantage=torch.tensor(
+                            advantage, dtype=torch.float32, device=model_device
+                        ).unsqueeze(0),
+                        returns=torch.tensor(
+                            return_value, dtype=torch.float32, device=model_device
+                        ).unsqueeze(0),
+                        clip_eps=clip_eps,
+                        vf_coef=vf_coef,
+                        ent_coef=ent_coef,
+                        gradient_layers=gradient_layers,
+                    )
+
+                    f["images"][step_idx] = ppo_buffer.obs_list[step_in_episode]
+                    f["gradients"][step_idx] = flatten_gradients(grads)
+                    f["actions"][step_idx] = ppo_buffer.actions[step_in_episode]
+                    f["rewards"][step_idx] = ppo_buffer.rewards[step_in_episode]
+                    f["episode_ids"][step_idx] = episode_idx
+                    f["done"][step_idx] = ppo_buffer.dones[step_in_episode]
+                    f["old_log_probs"][step_idx] = old_log_prob
+                    f["advantages"][step_idx] = advantage
+                    f["returns"][step_idx] = return_value
+                    step_idx += 1
+                    scene_steps += 1
+
+                episode_rewards.append(ep_reward)
+                episode_idx += 1
+                f.attrs["completed_steps"] = step_idx
+
+            print(f"  -> {scene}: {scene_steps} steps")
+            f.flush()
+
+        f.attrs["num_scenes"] = len(scenes)
+        f.attrs["steps_per_scene"] = steps_per_scene
+        f.attrs["total_steps"] = step_idx
+        f.attrs["completed_steps"] = step_idx
+        f.attrs["gradient_size"] = gradient_size
+        f.attrs["capture_mode"] = "ppo_exact_uniform_per_scene"
+        f.attrs["loss_type"] = "ppo"
+        f.attrs["ppo_clip_eps"] = clip_eps
+        f.attrs["ppo_vf_coef"] = vf_coef
+        f.attrs["ppo_ent_coef"] = ent_coef
+        f.attrs["gae_gamma"] = gamma
+        f.attrs["gae_lambda"] = lam
+        if episode_rewards:
+            f.attrs["avg_reward"] = np.mean(episode_rewards)
+        grad_names = sorted(test_grads.keys())
+        f.attrs["gradient_names"] = [name.encode() for name in grad_names]
+        f.attrs["gradient_shapes"] = [
+            str(test_grads[name].shape) for name in grad_names
+        ]
 
     return step_idx

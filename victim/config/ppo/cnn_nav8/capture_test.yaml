@@ -1,0 +1,17 @@
+# PPO gradient capture for the CNN/Nav8 held-out test split.
+# Usage: uv run -m victim.capture.capture victim/config/ppo/cnn_nav8/capture_test.yaml
+
+_base_: ../capture_test.yaml
+
+device: cpu
+
+environment:
+  action_set: nav8
+
+model:
+  checkpoint: ckpts/victim/ppo/cnn_nav8/ppo_ai2thor_final.pt
+  architecture: cnn
+  num_actions: 8
+
+capture:
+  save_path: trajectory_data/ppo/cnn_nav8/gradients_test.h5

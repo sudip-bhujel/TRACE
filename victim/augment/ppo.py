@@ -31,18 +31,21 @@ def _compute_ppo_gradient_from_targets(
     ent_coef: float = 0.01,
 ) -> np.ndarray:
     model.zero_grad()
+    model_device = next(model.parameters()).device
 
-    obs_tensor = torch.tensor(image, dtype=torch.float32, device=device).unsqueeze(0)
-    action_tensor = torch.tensor(action, dtype=torch.long, device=device)
+    obs_tensor = torch.tensor(
+        image, dtype=torch.float32, device=model_device
+    ).unsqueeze(0)
+    action_tensor = torch.tensor(action, dtype=torch.long, device=model_device)
     old_logp_tensor = torch.tensor(
-        old_log_prob, dtype=torch.float32, device=device
+        old_log_prob, dtype=torch.float32, device=model_device
     ).unsqueeze(0)
     advantage_tensor = torch.tensor(
-        advantage, dtype=torch.float32, device=device
+        advantage, dtype=torch.float32, device=model_device
     ).unsqueeze(0)
-    return_tensor = torch.tensor(returns, dtype=torch.float32, device=device).unsqueeze(
-        0
-    )
+    return_tensor = torch.tensor(
+        returns, dtype=torch.float32, device=model_device
+    ).unsqueeze(0)
 
     logits, value = model(obs_tensor)
     probs = F.softmax(logits, dim=-1)
@@ -73,10 +76,48 @@ def augment_ppo(
     vf_coef: float = 0.5,
     ent_coef: float = 0.01,
 ) -> int:
-    """Augment a PPO dataset using exact PPO loss with episode-buffered GAE targets."""
+    """Augment a PPO dataset using exact PPO targets."""
     num_original = f_in["images"].shape[0]
+    target_keys = ("old_log_probs", "advantages", "returns")
+    available_targets = [key in f_in for key in target_keys]
 
-    print("\n[PPO] Collecting episode data for GAE...")
+    if any(available_targets) and not all(available_targets):
+        raise ValueError(
+            "PPO target data is incomplete; expected old_log_probs, advantages, "
+            "and returns"
+        )
+
+    if all(available_targets):
+        print("\n[PPO] Using exact PPO targets stored during capture")
+        for aug_num in range(num_augmentations):
+            print(f"\n[Augmentation {aug_num + 1}/{num_augmentations}]")
+            for i in tqdm(range(num_original), desc="Augmenting samples"):
+                image = apply_color_jitter(f_in["images"][i], **jitter_kwargs)
+                action = int(f_in["actions"][i])
+                flat_grads = _compute_ppo_gradient_from_targets(
+                    model,
+                    image,
+                    action,
+                    float(f_in["old_log_probs"][i]),
+                    float(f_in["advantages"][i]),
+                    float(f_in["returns"][i]),
+                    clip_eps=clip_eps,
+                    vf_coef=vf_coef,
+                    ent_coef=ent_coef,
+                )
+
+                f_out["images"][out_idx] = image
+                f_out["gradients"][out_idx] = flat_grads.astype(np.float16)
+                f_out["actions"][out_idx] = action
+                f_out["rewards"][out_idx] = f_in["rewards"][i]
+                f_out["episode_ids"][out_idx] = (
+                    int(f_in["episode_ids"][i]) + (aug_num + 1) * 100_000
+                )
+                f_out["done"][out_idx] = f_in["done"][i]
+                out_idx += 1
+        return out_idx
+
+    print("\n[PPO] Legacy dataset: reconstructing PPO targets from episode data")
     episode_buffers: Dict[int, PPOGradientBuffer] = {}
 
     for i in tqdm(range(num_original), desc="Collecting episodes"):

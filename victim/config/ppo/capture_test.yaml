@@ -2,6 +2,7 @@
 # Usage: python -m victim.capture.capture victim/config/ppo/capture_test.yaml
 
 environment:
+  action_set: nav5
   scenes: [
       "FloorPlan28", "FloorPlan29", "FloorPlan30",
       "FloorPlan228", "FloorPlan229", "FloorPlan230",
@@ -14,6 +15,7 @@ environment:
 
 model:
   checkpoint: "ckpts/victim/ppo_ai2thor_final.pt"
+  architecture: cnn
   num_actions: 5
 
 capture:
@@ -22,6 +24,7 @@ capture:
   gradient_layers: null
   save_path: "trajectory_data/ppo/gradients_test.h5"
   compression: "gzip"
+  resume: false
   use_ppo_loss: true
   ppo_clip_eps: 0.2
   ppo_vf_coef: 0.5

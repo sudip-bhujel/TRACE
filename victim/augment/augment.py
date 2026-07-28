@@ -6,12 +6,12 @@ import sys
 import h5py
 import numpy as np
 import torch
-from omegaconf import OmegaConf
 from tqdm import tqdm
 
 from victim.augment.a2c import augment_a2c
 from victim.augment.ppo import augment_ppo
 from victim.capture.utils import load_model
+from victim.config_utils import load_config
 
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -46,6 +46,19 @@ def augment_hdf5_dataset(
         gradient_size = f_in["gradients"].shape[1]
         image_shape = f_in["images"].shape[1:]
         metadata = dict(f_in.attrs)
+        stored_architecture = f_in.attrs.get("victim_architecture")
+        stored_num_actions = f_in.attrs.get("num_actions")
+
+    if stored_architecture and stored_architecture != model.architecture:
+        raise ValueError(
+            f"Dataset was captured from '{stored_architecture}', but augmentation "
+            f"loaded a '{model.architecture}' victim"
+        )
+    if stored_num_actions and int(stored_num_actions) != model.num_actions:
+        raise ValueError(
+            f"Dataset has {int(stored_num_actions)} actions, but augmentation "
+            f"loaded a {model.num_actions}-action victim"
+        )
 
     num_augmented = num_original * num_augmentations
     total_samples = num_original + num_augmented
@@ -149,8 +162,10 @@ def augment_hdf5_dataset(
 
 
 if __name__ == "__main__":
-    assert len(sys.argv) == 2, "Usage: python -m victim.augment.augment <config.yaml>"
-    cfg = OmegaConf.load(sys.argv[1])
+    assert len(sys.argv) >= 2, (
+        "Usage: python -m victim.augment.augment <config.yaml> [key=value ...]"
+    )
+    cfg = load_config(sys.argv[1], sys.argv[2:])
 
     algorithm = cfg.get("algorithm", "ppo").lower()
     model_cfg = cfg.get("model", {})
@@ -162,8 +177,9 @@ if __name__ == "__main__":
 
     model = load_model(
         model_cfg.get("checkpoint"),
-        num_actions=model_cfg.get("num_actions", 5),
+        num_actions=model_cfg.get("num_actions"),
         algorithm=algorithm,
+        architecture=model_cfg.get("architecture"),
     )
 
     jitter_kwargs = {

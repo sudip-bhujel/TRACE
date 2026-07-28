@@ -2,8 +2,13 @@
 # Usage: python -m victim.training.train victim/config/ppo/train.yaml
 
 algorithm: ppo
+device: auto
+
+model:
+  architecture: cnn
 
 environment:
+  action_set: nav5
   scenes:
     - "FloorPlan1"
     - "FloorPlan2"

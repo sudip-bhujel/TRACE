@@ -22,7 +22,16 @@ from attacker.evaluation.metrics import (
 from attacker.models.autoregressive_model import AutoregressiveGradientInversion
 from attacker.models.model import TemporalGradientInversion
 
-ACTION_NAMES = ["MoveAhead", "RotateLeft", "RotateRight", "LookDown", "LookUp"]
+ACTION_NAMES = [
+    "MoveAhead",
+    "RotateLeft",
+    "RotateRight",
+    "LookDown",
+    "LookUp",
+    "MoveBack",
+    "MoveLeft",
+    "MoveRight",
+]
 
 
 def load_model(
@@ -140,6 +149,7 @@ def evaluate_and_save_reconstructions(
     num_actions: int = 5,
     model_type: str = "temporal",
     teacher_forcing: bool = False,
+    action_names: Optional[List[str]] = None,
 ):
     """Compute aggregate metrics and save reconstruction figures + confusion matrix."""
     plt.rcParams["font.family"] = "serif"
@@ -148,11 +158,13 @@ def evaluate_and_save_reconstructions(
 
     metrics = MetricsComputer(device, compute_fid_flag=enable_fid)
 
-    action_labels = (
-        ACTION_NAMES[:num_actions]
-        if num_actions <= len(ACTION_NAMES)
-        else [f"Action {i}" for i in range(num_actions)]
-    )
+    action_labels = action_names
+    if action_labels is None or len(action_labels) != num_actions:
+        action_labels = (
+            ACTION_NAMES[:num_actions]
+            if num_actions <= len(ACTION_NAMES)
+            else [f"Action {i}" for i in range(num_actions)]
+        )
 
     data_iter = iter(dataloader)
     evaluated = 0
@@ -265,6 +277,7 @@ def evaluate(
     stride: int = 8,  # Non-overlapping for test
     gradient_dim: Optional[int] = None,
     gradient_layers: Optional[List[str]] = None,
+    num_actions: Optional[int] = None,
     device: str = "auto",
     batch_size: int = 1,
     # Model architecture params
@@ -306,10 +319,11 @@ def evaluate(
         stride=stride,
         gradient_dim=gradient_dim,
         gradient_layers=gradient_layers,
+        num_actions=num_actions,
     )
 
     actual_gradient_dim = dataset.effective_gradient_dim
-    num_actions = len(dataset.actions.unique())
+    num_actions = dataset.num_actions
 
     dataloader = DataLoader(
         dataset,
@@ -360,6 +374,7 @@ def evaluate(
         num_actions=num_actions,
         model_type=model_type,
         teacher_forcing=teacher_forcing,
+        action_names=dataset.action_names,
     )
 
 
@@ -388,6 +403,7 @@ if __name__ == "__main__":
         stride=model_cfg.get("stride", 8),
         gradient_dim=gradient_dim,
         gradient_layers=gradient_layers,
+        num_actions=model_cfg.get("num_actions"),
         device=cfg.get("device", "auto"),
         latent_dim=model_cfg.get("latent_dim", 512),
         num_transformer_layers=model_cfg.get("num_transformer_layers", 4),

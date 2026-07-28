@@ -5,7 +5,7 @@ import h5py
 import numpy as np
 import torch
 
-from victim.models.actor_critic import ActorCritic
+from victim.models.actor_critic import build_actor_critic
 
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -17,14 +17,53 @@ else:
 
 def load_model(
     checkpoint_path: str,
-    num_actions: int = 5,
+    num_actions: Optional[int] = None,
     algorithm: str = "ppo",
+    architecture: Optional[str] = None,
+    device_name: str = "auto",
 ) -> torch.nn.Module:
     """Load a trained victim checkpoint. Supports ppo, a2c."""
     algorithm = algorithm.lower()
-    model = ActorCritic(in_channels=3, num_actions=num_actions).to(device)
+    if device_name != "auto":
+        model_device = torch.device(device_name)
+    else:
+        model_device = device
+    checkpoint = torch.load(checkpoint_path, map_location=model_device)
+    checkpoint_model_cfg = (
+        checkpoint.get("model_config", {})
+        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint
+        else {}
+    )
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    saved_architecture = checkpoint_model_cfg.get("architecture")
+    saved_num_actions = checkpoint_model_cfg.get("num_actions")
+    resolved_architecture = architecture or saved_architecture or "cnn"
+    resolved_num_actions = num_actions or saved_num_actions or 5
+
+    if (
+        architecture is not None
+        and saved_architecture is not None
+        and architecture.lower() != saved_architecture.lower()
+    ):
+        raise ValueError(
+            f"Config requests architecture '{architecture}', but checkpoint "
+            f"contains '{saved_architecture}'"
+        )
+    if (
+        num_actions is not None
+        and saved_num_actions is not None
+        and num_actions != saved_num_actions
+    ):
+        raise ValueError(
+            f"Config requests {num_actions} actions, but checkpoint contains "
+            f"{saved_num_actions}"
+        )
+
+    model = build_actor_critic(
+        architecture=resolved_architecture,
+        in_channels=3,
+        num_actions=resolved_num_actions,
+    ).to(model_device)
 
     if "model_state_dict" in checkpoint:
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -38,6 +77,7 @@ def load_model(
 
     model.eval()
     model.requires_grad_(True)
+    print(f"  Device: {model_device}")
     return model
 
 
@@ -72,6 +112,7 @@ def create_hdf5_dataset(
     compression: str = "gzip",
     compression_level: int = 4,
     with_next_images: bool = False,
+    with_ppo_targets: bool = False,
 ) -> None:
     """Pre-allocate HDF5 datasets for gradient capture."""
     with h5py.File(save_path, "w") as f:
@@ -131,6 +172,15 @@ def create_hdf5_dataset(
             dtype=np.bool_,
             compression=compression,
         )
+        if with_ppo_targets:
+            for key in ("old_log_probs", "advantages", "returns"):
+                f.create_dataset(
+                    key,
+                    shape=(num_steps,),
+                    maxshape=(None,),
+                    dtype=np.float32,
+                    compression=compression,
+                )
     print(f"Created HDF5 file: {save_path}")
 
 

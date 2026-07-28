@@ -1,0 +1,15 @@
+# PPO gradient capture for the Tiny-ViT/Nav5 held-out test split.
+# Usage: uv run -m victim.capture.capture victim/config/ppo/tiny_vit_nav5/capture_test.yaml
+
+_base_: ../capture_test.yaml
+
+environment:
+  action_set: nav5
+
+model:
+  checkpoint: ckpts/victim/ppo/tiny_vit_nav5/ppo_ai2thor_final.pt
+  architecture: tiny_vit
+  num_actions: 5
+
+capture:
+  save_path: trajectory_data/ppo/tiny_vit_nav5/gradients_test.h5

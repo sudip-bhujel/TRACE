@@ -286,6 +286,7 @@ def train(
     save_dir: Union[str, Path] = "ckpts/attacker_temporal",
     gradient_dim: Optional[int] = None,
     gradient_layers: Optional[List[str]] = None,
+    num_actions: Optional[int] = None,
     sequence_length: int = 8,
     latent_dim: int = 512,
     stride: int = 4,
@@ -389,6 +390,7 @@ def train(
         gradient_dim=gradient_dim,
         gradient_layers=gradient_layers,
         max_sequences=max_sequences,
+        num_actions=num_actions,
     )
     actual_gradient_dim = dataset.effective_gradient_dim
 
@@ -449,7 +451,7 @@ def train(
         pin_memory=True,
     )
 
-    num_actions = len(dataset.actions.unique())
+    num_actions = dataset.num_actions
     if master_process:
         print(f"  Number of actions: {num_actions}")
 
@@ -674,6 +676,8 @@ def train(
                     "train_loss": train_loss,
                     "val_loss": val_loss,
                     "decoder_type": decoder_type,
+                    "gradient_dim": actual_gradient_dim,
+                    "num_actions": num_actions,
                 },
                 save_dir / "best_model.pt",
             )
@@ -697,6 +701,8 @@ def train(
                 "model_state_dict": state_dict,
                 "train_losses": train_losses,
                 "val_losses": val_losses,
+                "gradient_dim": actual_gradient_dim,
+                "num_actions": num_actions,
             },
             save_dir / "final_model.pt",
         )
@@ -773,6 +779,7 @@ if __name__ == "__main__":
         save_dir=save_dir,
         gradient_dim=gradient_dim,
         gradient_layers=gradient_layers,
+        num_actions=model_cfg.get("num_actions"),
         sequence_length=seq_len,
         latent_dim=model_cfg.get("latent_dim", 512),
         stride=model_cfg.get("stride", 4),
@@ -830,6 +837,7 @@ if __name__ == "__main__":
             stride=model_cfg.get("stride", 8),
             gradient_dim=gradient_dim,
             gradient_layers=gradient_layers,
+            num_actions=model_cfg.get("num_actions"),
             device=cfg.get("device", "auto"),
             latent_dim=model_cfg.get("latent_dim", 512),
             num_transformer_layers=model_cfg.get("num_transformer_layers", 4),

@@ -1,0 +1,16 @@
+# PPO victim training: CNN with eight navigation actions.
+# Usage: uv run -m victim.training.train victim/config/ppo/cnn_nav8/train.yaml
+
+_base_: ../train.yaml
+
+device: cpu
+
+model:
+  architecture: cnn
+
+environment:
+  action_set: nav8
+
+output:
+  save_dir: ckpts/victim/ppo/cnn_nav8
+  plot_path: output/victim_ppo_cnn_nav8.png

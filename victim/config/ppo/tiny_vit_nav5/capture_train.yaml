@@ -1,0 +1,15 @@
+# PPO gradient capture for the Tiny-ViT/Nav5 training split.
+# Usage: uv run -m victim.capture.capture victim/config/ppo/tiny_vit_nav5/capture_train.yaml
+
+_base_: ../capture_train.yaml
+
+environment:
+  action_set: nav5
+
+model:
+  checkpoint: ckpts/victim/ppo/tiny_vit_nav5/ppo_ai2thor_final.pt
+  architecture: tiny_vit
+  num_actions: 5
+
+capture:
+  save_path: trajectory_data/ppo/tiny_vit_nav5/gradients_train.h5

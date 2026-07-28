@@ -1,11 +1,10 @@
+import json
 from typing import List, Optional, Tuple, cast
 
 import h5py
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-
-from attacker.analyze_gradients import get_layer_map
 
 
 class TemporalGradientDataset(Dataset):
@@ -19,6 +18,7 @@ class TemporalGradientDataset(Dataset):
         gradient_dim: Optional[int] = None,
         gradient_layers: Optional[List[str]] = None,
         max_sequences: Optional[int] = None,
+        num_actions: Optional[int] = None,
     ):
         self.sequence_length = sequence_length
         self.stride = stride
@@ -33,6 +33,14 @@ class TemporalGradientDataset(Dataset):
                     "Warning: Both gradient_layers and gradient_dim are set. "
                     "gradient_layers takes priority; gradient_dim is ignored."
                 )
+            try:
+                from attacker.analyze_gradients import get_layer_map
+            except ModuleNotFoundError as exc:
+                raise ModuleNotFoundError(
+                    "gradient_layers requires attacker.analyze_gradients, which "
+                    "is not present in this checkout. Use the full gradient by "
+                    "setting gradient_layers: null."
+                ) from exc
             layer_map, _total = get_layer_map()
 
             with h5py.File(h5_path, "r") as h5_tmp:
@@ -77,6 +85,44 @@ class TemporalGradientDataset(Dataset):
             self.actions = torch.tensor(actions_ds[:], dtype=torch.long)
             self.episode_ids = torch.tensor(episode_ids_ds[:], dtype=torch.long)
             self.done = torch.tensor(done_ds[:], dtype=torch.bool)
+            stored_num_actions = h5_file.attrs.get("num_actions")
+            stored_action_names = h5_file.attrs.get("action_names")
+
+        inferred_num_actions = (
+            int(self.actions.max().item()) + 1 if len(self.actions) > 0 else 0
+        )
+        if (
+            num_actions is not None
+            and stored_num_actions is not None
+            and num_actions != int(stored_num_actions)
+        ):
+            raise ValueError(
+                f"Config requests {num_actions} actions, but {h5_path} declares "
+                f"{int(stored_num_actions)}"
+            )
+        self.num_actions = int(
+            num_actions
+            if num_actions is not None
+            else stored_num_actions
+            if stored_num_actions is not None
+            else inferred_num_actions
+        )
+        if inferred_num_actions > self.num_actions:
+            raise ValueError(
+                f"Dataset contains action index {inferred_num_actions - 1}, but "
+                f"num_actions is {self.num_actions}"
+            )
+
+        self.action_names: Optional[List[str]] = None
+        if stored_action_names is not None:
+            if isinstance(stored_action_names, bytes):
+                stored_action_names = stored_action_names.decode()
+            try:
+                parsed_names = json.loads(str(stored_action_names))
+                if isinstance(parsed_names, list):
+                    self.action_names = [str(name) for name in parsed_names]
+            except json.JSONDecodeError:
+                pass
 
         if self._effective_gradient_dim is None:
             if gradient_dim is not None and gradient_dim < self.gradient_shape[1]:

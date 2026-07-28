@@ -9,14 +9,6 @@ from victim.capture.ppo import compute_gradients
 from victim.capture.utils import create_hdf5_dataset, flatten_gradients
 from victim.environment import AI2THORNavEnv
 
-if torch.cuda.is_available():
-    device = torch.device("cuda")
-elif torch.backends.mps.is_available():
-    device = torch.device("mps")
-else:
-    device = torch.device("cpu")
-
-
 def _sample_action(
     model: torch.nn.Module, obs_tensor: torch.Tensor, algorithm: str
 ) -> int:
@@ -48,8 +40,11 @@ def capture_and_save_streaming(
     algorithm: str = "ppo",
 ) -> int:
     """Capture trajectories using the algorithm-specific probe loss."""
+    model_device = next(model.parameters()).device
     obs = env.reset()
-    obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+    obs_tensor = torch.tensor(
+        obs, dtype=torch.float32, device=model_device
+    ).unsqueeze(0)
     test_grads = _compute_probe_gradients(
         model, obs_tensor, 0, algorithm, gradient_layers
     )
@@ -85,7 +80,7 @@ def capture_and_save_streaming(
 
             while not done and ep_steps < max_steps:
                 obs_tensor = torch.tensor(
-                    obs, dtype=torch.float32, device=device
+                    obs, dtype=torch.float32, device=model_device
                 ).unsqueeze(0)
                 action = _sample_action(model, obs_tensor, algorithm)
                 gradients = _compute_probe_gradients(
@@ -154,8 +149,11 @@ def capture_uniform_per_scene(
     algorithm: str = "ppo",
 ) -> int:
     """Capture a fixed number of probe-loss steps per scene."""
+    model_device = next(model.parameters()).device
     obs = env.reset(scene=scenes[0])
-    obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+    obs_tensor = torch.tensor(
+        obs, dtype=torch.float32, device=model_device
+    ).unsqueeze(0)
     test_grads = _compute_probe_gradients(
         model, obs_tensor, 0, algorithm, gradient_layers
     )
@@ -198,7 +196,7 @@ def capture_uniform_per_scene(
                     and scene_steps < steps_per_scene
                 ):
                     obs_tensor = torch.tensor(
-                        obs, dtype=torch.float32, device=device
+                        obs, dtype=torch.float32, device=model_device
                     ).unsqueeze(0)
                     action = _sample_action(model, obs_tensor, algorithm)
                     gradients = _compute_probe_gradients(

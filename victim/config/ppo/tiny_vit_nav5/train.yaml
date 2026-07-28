@@ -1,0 +1,14 @@
+# PPO victim training: Tiny ViT with the original five navigation actions.
+# Usage: uv run -m victim.training.train victim/config/ppo/tiny_vit_nav5/train.yaml
+
+_base_: ../train.yaml
+
+model:
+  architecture: tiny_vit
+
+environment:
+  action_set: nav5
+
+output:
+  save_dir: ckpts/victim/ppo/tiny_vit_nav5
+  plot_path: output/victim_ppo_tiny_vit_nav5.png
