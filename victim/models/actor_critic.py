@@ -115,11 +115,17 @@ class _ImpalaConvSequence(nn.Module):
         self.pool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.residual1 = _ImpalaResidualBlock(out_channels)
         self.residual2 = _ImpalaResidualBlock(out_channels)
+        # Batch-independent normalization keeps the residual stream stable on
+        # both single-observation capture and small PPO minibatches.
+        self.norm = nn.GroupNorm(
+            num_groups=min(8, out_channels),
+            num_channels=out_channels,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.pool(self.conv(x))
         x = self.residual1(x)
-        return self.residual2(x)
+        return self.norm(self.residual2(x))
 
 
 class IMPALAActorCritic(nn.Module):

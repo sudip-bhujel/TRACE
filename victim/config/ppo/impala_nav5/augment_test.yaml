@@ -1,0 +1,13 @@
+# PPO gradient augmentation for the IMPALA-CNN/Nav5 held-out test split.
+# Usage: uv run -m victim.augment.augment victim/config/ppo/impala_nav5/augment_test.yaml
+
+_base_: ../augment_test.yaml
+
+model:
+  checkpoint: ckpts/victim/ppo/impala_nav5/ppo_ai2thor_final.pt
+  architecture: impala_cnn
+  num_actions: 5
+
+data:
+  input: trajectory_data/ppo/impala_nav5/gradients_test.h5
+  output: trajectory_data/ppo/impala_nav5/gradients_test_augmented.h5

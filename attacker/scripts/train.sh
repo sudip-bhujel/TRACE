@@ -2,7 +2,7 @@
 # Usage: source .env && sbatch -A $ACCOUNT_NAME attacker/scripts/train.sh <config_path>
 # Example: cd $SCRATCH/projects/grad_inversion && source .env && sbatch -A $ACCOUNT_NAME attacker/scripts/train.sh attacker/config/train_layers_dino.yaml
 
-#SBATCH --time=12:00:00
+#SBATCH --time=18:00:00
 #SBATCH --job-name=train
 #SBATCH --ntasks=1
 #SBATCH --partition=H8V141_SAP112M2000_L
@@ -17,6 +17,7 @@ module load ccs/Miniconda3
 source activate inversion
 
 CONFIG="$1"
+shift
 
 if [ ! -f "$CONFIG" ]; then
     echo "Error: Config file not found: $CONFIG"
@@ -65,11 +66,11 @@ echo "==== Detected $NGPUS GPUs ===="
 if [ "$NGPUS" -gt 1 ]; then
     echo "==== Starting DDP training with $NGPUS GPUs ===="
     # Use torch.distributed.run (torchrun) for DDP
-    python -m torch.distributed.run --standalone --nproc_per_node=$NGPUS -m attacker.training.train $CONFIG
+    python -m torch.distributed.run --standalone --nproc_per_node=$NGPUS -m attacker.training.train "$CONFIG" "$@"
 else
     echo "==== Starting single-GPU/CPU training ===="
     # Standard python execution for single device
-    python -m attacker.training.train $CONFIG
+    python -m attacker.training.train "$CONFIG" "$@"
 fi
 
 echo "---- Container execution completed ----"

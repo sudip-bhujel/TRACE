@@ -1,0 +1,62 @@
+# TRACE training on augmented PPO captures from the CNN/Nav8 victim.
+# Usage: sbatch -A $ACCOUNT_NAME attacker/scripts/train.sh attacker/config/ppo/cnn_nav8_augmented.yaml
+
+device: auto
+
+data:
+  h5_path: trajectory_data/ppo/cnn_nav8/gradients_train_augmented.h5
+  gradient_dim: null
+
+model:
+  model_type: autoregressive
+  num_actions: 8
+  sequence_length: 8
+  latent_dim: 1024
+  encoder_hidden_dim: 2048
+  stride: 2
+  num_transformer_layers: 6
+  num_heads: 8
+  encoder_type: residual
+  decoder_type: residual
+  use_flash_attention: true
+
+training:
+  num_epochs: 50
+  batch_size: 8
+  accumulation_steps: 2
+  learning_rate: 1e-4
+  weight_decay: 1e-5
+  num_workers: 4
+  lr_schedule: cosine
+  warmup_epochs: 5
+  min_lr: 1e-6
+  gradient_noise_scale: 0.0
+  scheduled_sampling_start: 0.1
+  scheduled_sampling_end: 0.8
+  scheduled_sampling_warmup: 5
+  rollout_steps: 3
+  rollout_weight: 0.5
+
+loss:
+  mse_weight: 1.0
+  l1_weight: 0.5
+  action_weight: 0.01
+  temporal_weight: 0.0
+  lpips_weight: 0.2
+  lpips_net: vgg
+
+output:
+  save_dir: ckpts/trace/ppo/cnn_nav8_augmented
+
+eval:
+  enabled: true
+  h5_path: trajectory_data/ppo/cnn_nav8/gradients_test.h5
+  num_sequences: 100
+
+wandb:
+  enabled: true
+  project: trace
+  name: cnn-nav8-augmented
+  group: ppo/architecture-actions
+  entity: gradinversion
+  tags: ["ppo", "cnn", "nav8", "augmented"]

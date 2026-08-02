@@ -316,6 +316,7 @@ def train(
     weight_decay: float = 1e-5,
     num_workers: int = 4,
     pretrained_checkpoint: str = "",
+    resume_checkpoint: str = "",
     finetune_fraction: float = 1.0,
     # Ablation: skip transformer
     skip_transformer: bool = False,
@@ -500,7 +501,21 @@ def train(
     if master_process:
         print(f"\nModel parameters: {num_params:,}")
 
-    if pretrained_checkpoint:
+    if pretrained_checkpoint and resume_checkpoint:
+        raise ValueError(
+            "Set only one of pretrained_checkpoint or resume_checkpoint"
+        )
+
+    resume_state = None
+    if resume_checkpoint:
+        resume_state = torch.load(
+            resume_checkpoint, map_location="cpu", weights_only=False
+        )
+        state_dict = resume_state.get("model_state_dict", resume_state)
+        model.load_state_dict(state_dict)
+        if master_process:
+            print(f"\n[RESUME] Loaded checkpoint from {resume_checkpoint}")
+    elif pretrained_checkpoint:
         ckpt = torch.load(
             pretrained_checkpoint, map_location=device, weights_only=False
         )
@@ -574,14 +589,65 @@ def train(
     if scaler and master_process:
         print("Using mixed precision training (fp16)")
 
+    start_epoch = 1
     best_val_loss = float("inf")
     train_losses = []
     val_losses = []
 
+    if resume_state is not None:
+        resume_epoch = int(resume_state.get("epoch", 0))
+        if resume_epoch >= num_epochs:
+            raise ValueError(
+                f"Checkpoint is already at epoch {resume_epoch}, but num_epochs is "
+                f"{num_epochs}"
+            )
+
+        optimizer_state = resume_state.get("optimizer_state_dict")
+        if optimizer_state is None:
+            raise ValueError(
+                "Resume checkpoint does not contain optimizer_state_dict; use "
+                "model.pretrained_checkpoint for weights-only fine-tuning"
+            )
+
+        scheduler_state = resume_state.get("scheduler_state_dict")
+        if scheduler is not None and scheduler_state is None:
+            # Older checkpoints did not store scheduler state. Reconstruct its
+            # epoch position before restoring the checkpoint's optimizer state.
+            optimizer.step()
+            for _ in range(resume_epoch):
+                scheduler.step()
+
+        optimizer.load_state_dict(optimizer_state)
+        if scheduler is not None and scheduler_state is not None:
+            scheduler.load_state_dict(scheduler_state)
+
+        scaler_state = resume_state.get("scaler_state_dict")
+        if scaler is not None and scaler_state is not None:
+            scaler.load_state_dict(scaler_state)
+
+        saved_val_loss = resume_state.get("val_loss")
+        if isinstance(saved_val_loss, dict):
+            best_val_loss = float(saved_val_loss.get("total", best_val_loss))
+        else:
+            best_val_loss = float(
+                resume_state.get("best_val_loss", best_val_loss)
+            )
+
+        train_losses = list(resume_state.get("train_losses", []))
+        val_losses = list(resume_state.get("val_losses", []))
+        start_epoch = resume_epoch + 1
+        del resume_state
+
+        if master_process:
+            print(
+                f"  Continuing at epoch {start_epoch}/{num_epochs} "
+                f"(best_val_loss={best_val_loss:.4f})"
+            )
+
     if master_process:
         print("\nStarting training...")
 
-    for epoch in range(1, num_epochs + 1):
+    for epoch in range(start_epoch, num_epochs + 1):
         if ddp and train_sampler is not None:
             train_sampler.set_epoch(epoch)
 
@@ -673,6 +739,15 @@ def train(
                     "epoch": epoch,
                     "model_state_dict": state_dict,
                     "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict()
+                    if scheduler is not None
+                    else None,
+                    "scaler_state_dict": scaler.state_dict()
+                    if scaler is not None
+                    else None,
+                    "best_val_loss": best_val_loss,
+                    "train_losses": train_losses,
+                    "val_losses": val_losses,
                     "train_loss": train_loss,
                     "val_loss": val_loss,
                     "decoder_type": decoder_type,
@@ -725,11 +800,13 @@ def train(
 
 
 if __name__ == "__main__":
-    assert len(sys.argv) > 1, "Usage: python train.py <config_path>"
+    assert len(sys.argv) > 1, (
+        "Usage: python train.py <config_path> [key=value ...]"
+    )
 
     cfg_loaded = OmegaConf.load(sys.argv[1])
     assert isinstance(cfg_loaded, DictConfig), "Config root must be a mapping"
-    cfg: DictConfig = cfg_loaded
+    cfg: DictConfig = OmegaConf.merge(cfg_loaded, OmegaConf.from_cli(sys.argv[2:]))
 
     data_cfg = cast(Dict[str, Any], cfg.get("data", {}))
     model_cfg = cast(Dict[str, Any], cfg.get("model", {}))
@@ -808,6 +885,7 @@ if __name__ == "__main__":
         weight_decay=training_cfg.get("weight_decay", 1e-5),
         num_workers=training_cfg.get("num_workers", 4),
         pretrained_checkpoint=model_cfg.get("pretrained_checkpoint", ""),
+        resume_checkpoint=training_cfg.get("resume_checkpoint", ""),
         finetune_fraction=data_cfg.get("finetune_fraction", 1.0),
         skip_transformer=model_cfg.get("skip_transformer", False),
         is_causal=model_cfg.get("is_causal", True),
