@@ -1,0 +1,15 @@
+# PPO gradient capture for the wider IMPALA/Nav5 held-out split.
+# Usage: uv run -m victim.capture.capture victim/config/ppo/impala_large_nav5/capture_test.yaml
+
+_base_: ../capture_test.yaml
+
+environment:
+  action_set: nav5
+
+model:
+  checkpoint: ckpts/victim/ppo/impala_large_nav5/ppo_ai2thor_final.pt
+  architecture: impala_large
+  num_actions: 5
+
+capture:
+  save_path: trajectory_data/ppo/impala_large_nav5/gradients_test.h5

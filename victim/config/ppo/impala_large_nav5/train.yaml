@@ -1,0 +1,17 @@
+# PPO victim training: wider IMPALA residual CNN with five navigation actions.
+# Usage: uv run -m victim.training.train victim/config/ppo/impala_large_nav5/train.yaml
+
+_base_: ../train.yaml
+
+model:
+  architecture: impala_large
+
+environment:
+  action_set: nav5
+
+ppo:
+  learning_rate: 1e-4
+
+output:
+  save_dir: ckpts/victim/ppo/impala_large_nav5
+  plot_path: output/victim_ppo_impala_large_nav5.png

@@ -1,5 +1,5 @@
 from collections import namedtuple
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -222,15 +222,22 @@ class IMPALAActorCritic(nn.Module):
         in_channels: int = 3,
         num_actions: int = 5,
         hidden_size: int = 256,
+        channels: Sequence[int] = (16, 32, 32),
+        architecture: str = "impala_cnn",
     ):
         super().__init__()
-        self.architecture = "impala_cnn"
+        if len(channels) != 3:
+            raise ValueError("IMPALA victims require exactly three channel widths")
+
+        self.architecture = architecture
         self.num_actions = num_actions
+        self.encoder_channels = tuple(channels)
+        self.hidden_size = hidden_size
 
         self.encoder = nn.Sequential(
-            _ImpalaConvSequence(in_channels, 16),
-            _ImpalaConvSequence(16, 32),
-            _ImpalaConvSequence(32, 32),
+            _ImpalaConvSequence(in_channels, channels[0]),
+            _ImpalaConvSequence(channels[0], channels[1]),
+            _ImpalaConvSequence(channels[1], channels[2]),
             nn.ReLU(),
             _ReshapeFlatten(),
         )
@@ -251,6 +258,19 @@ class IMPALAActorCritic(nn.Module):
         features = self.encoder(x)
         hidden = self.fc(features)
         return self.policy(hidden), self.value(hidden).squeeze(-1)
+
+
+class LargeIMPALAActorCritic(IMPALAActorCritic):
+    """Wider IMPALA residual backbone for victim-scaling experiments."""
+
+    def __init__(self, in_channels: int = 3, num_actions: int = 5):
+        super().__init__(
+            in_channels=in_channels,
+            num_actions=num_actions,
+            hidden_size=256,
+            channels=(32, 64, 64),
+            architecture="impala_large",
+        )
 
 
 class TinyViTActorCritic(nn.Module):
@@ -344,6 +364,11 @@ def build_actor_critic(
             in_channels=in_channels,
             num_actions=num_actions,
         )
+    if architecture in {"impala_large", "large_impala"}:
+        return LargeIMPALAActorCritic(
+            in_channels=in_channels,
+            num_actions=num_actions,
+        )
     if architecture in {"tiny_vit", "tinyvit"}:
         return TinyViTActorCritic(
             in_channels=in_channels,
@@ -351,7 +376,7 @@ def build_actor_critic(
         )
     raise ValueError(
         f"Unknown victim architecture '{architecture}'. "
-        "Choose: cnn, cnn_gru, impala_cnn, tiny_vit"
+        "Choose: cnn, cnn_gru, impala_cnn, impala_large, tiny_vit"
     )
 
 

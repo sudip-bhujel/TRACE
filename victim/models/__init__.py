@@ -2,6 +2,7 @@ from victim.models.actor_critic import (
     A2C,
     ActorCritic,
     IMPALAActorCritic,
+    LargeIMPALAActorCritic,
     RecurrentActorCritic,
     TinyViTActorCritic,
     Transition,
@@ -14,6 +15,7 @@ from victim.models.actor_critic import (
 __all__ = [
     "ActorCritic",
     "IMPALAActorCritic",
+    "LargeIMPALAActorCritic",
     "RecurrentActorCritic",
     "TinyViTActorCritic",
     "build_actor_critic",
