@@ -1,0 +1,16 @@
+# PPO gradient capture for the RGB + point-goal/Nav5 held-out split.
+# Usage: uv run -m victim.capture.capture victim/config/ppo/rgb_goal_nav5/capture_test.yaml
+
+_base_: ../capture_test.yaml
+
+environment:
+  action_set: nav5
+  observation_mode: rgb_goal
+
+model:
+  checkpoint: ckpts/victim/ppo/rgb_goal_nav5/ppo_ai2thor_final.pt
+  architecture: cnn_rgb_goal
+  num_actions: 5
+
+capture:
+  save_path: trajectory_data/ppo/rgb_goal_nav5/gradients_test.h5

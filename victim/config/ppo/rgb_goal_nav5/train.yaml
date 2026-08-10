@@ -1,0 +1,15 @@
+# PPO victim training: multimodal RGB + point-goal CNN with five actions.
+# Usage: uv run -m victim.training.train victim/config/ppo/rgb_goal_nav5/train.yaml
+
+_base_: ../train.yaml
+
+model:
+  architecture: cnn_rgb_goal
+
+environment:
+  action_set: nav5
+  observation_mode: rgb_goal
+
+output:
+  save_dir: ckpts/victim/ppo/rgb_goal_nav5
+  plot_path: output/victim_ppo_rgb_goal_nav5.png

@@ -1,3 +1,4 @@
+import math
 import random
 import time
 from typing import Dict, List, Tuple
@@ -7,12 +8,16 @@ import numpy as np
 from ai2thor.controller import Controller
 from ai2thor.platform import CloudRendering
 
+from victim.observations import NumpyObservation
+
 
 class AI2THORNavEnv:
     """
     Gym-like AI2-THOR point-navigation environment.
 
-    Observations: RGB image (3, 84, 84), uint8.
+    Observations are RGB images by default. ``rgb_goal`` additionally provides
+    an egocentric point-goal vector: normalized distance, sine, and cosine of
+    the relative bearing.
     The default ``nav5`` action set preserves the original five action indices.
     ``nav8`` appends MoveBack, MoveLeft, and MoveRight.
     Reward: -0.01 per step, +1.0 if the agent reaches the target.
@@ -48,10 +53,16 @@ class AI2THORNavEnv:
         headless: bool = True,
         grid_size: float = 0.25,
         action_set: str = "nav5",
+        observation_mode: str = "rgb",
     ):
         if action_set not in self.ACTION_SETS:
             choices = ", ".join(sorted(self.ACTION_SETS))
             raise ValueError(f"Unknown action_set '{action_set}'. Choose: {choices}")
+        if observation_mode not in {"rgb", "rgb_goal"}:
+            raise ValueError(
+                f"Unknown observation_mode '{observation_mode}'. "
+                "Choose: rgb, rgb_goal"
+            )
 
         self.scene = scene
         self.image_size = image_size
@@ -61,6 +72,7 @@ class AI2THORNavEnv:
         self.action_set = action_set
         self.actions = [dict(action) for action in self.ACTION_SETS[action_set]]
         self.action_names = [action["action"] for action in self.actions]
+        self.observation_mode = observation_mode
 
         self.controller = Controller(
             scene=scene,
@@ -79,10 +91,35 @@ class AI2THORNavEnv:
         self.last_event = None
         self.target_position = None
 
-    def _get_observation(self) -> np.ndarray:
+    def _get_rgb_observation(self) -> np.ndarray:
         frame = self.last_event.frame
         img = cv2.resize(frame, (self.image_size[1], self.image_size[0]))
         return np.transpose(img, (2, 0, 1)).astype(np.uint8)
+
+    def _get_goal_observation(self) -> np.ndarray:
+        if self.target_position is None:
+            return np.zeros(3, dtype=np.float32)
+
+        agent = self.last_event.metadata["agent"]
+        position = agent["position"]
+        dx = self.target_position["x"] - position["x"]
+        dz = self.target_position["z"] - position["z"]
+        distance = math.hypot(dx, dz)
+
+        yaw = math.radians(agent["rotation"]["y"])
+        forward = dx * math.sin(yaw) + dz * math.cos(yaw)
+        right = dx * math.cos(yaw) - dz * math.sin(yaw)
+        bearing = math.atan2(right, forward)
+        return np.asarray(
+            [min(distance / 10.0, 1.0), math.sin(bearing), math.cos(bearing)],
+            dtype=np.float32,
+        )
+
+    def _get_observation(self) -> NumpyObservation:
+        rgb = self._get_rgb_observation()
+        if self.observation_mode == "rgb_goal":
+            return {"rgb": rgb, "goal": self._get_goal_observation()}
+        return rgb
 
     def _get_agent_position(self) -> Dict[str, float]:
         return self.last_event.metadata["agent"]["position"]
@@ -114,7 +151,7 @@ class AI2THORNavEnv:
                     else:
                         raise e
 
-    def reset(self, scene: str = None) -> np.ndarray:
+    def reset(self, scene: str = None) -> NumpyObservation:
         if scene is not None:
             self.set_scene(scene)
 
@@ -177,7 +214,7 @@ class AI2THORNavEnv:
         )
         print("Controller restarted.")
 
-    def step(self, action: int) -> Tuple[np.ndarray, float, bool, Dict]:
+    def step(self, action: int) -> Tuple[NumpyObservation, float, bool, Dict]:
         if action < 0 or action >= self.action_space_n:
             raise ValueError(
                 f"Action index {action} is outside [0, {self.action_space_n})"

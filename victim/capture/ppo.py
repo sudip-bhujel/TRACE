@@ -15,9 +15,11 @@ from victim.capture.utils import (
 from victim.environment import AI2THORNavEnv
 from victim.models.actor_critic import (
     ActorCritic,
+    TensorObservation,
     forward_actor_critic,
     initial_recurrent_state,
 )
+from victim.observations import observation_image, observation_to_torch
 
 
 def _infer_written_steps(gradients: h5py.Dataset) -> int:
@@ -40,7 +42,7 @@ def _infer_written_steps(gradients: h5py.Dataset) -> int:
 
 def compute_gradients(
     model: ActorCritic,
-    observation: torch.Tensor,
+    observation: TensorObservation,
     action: int,
     gradient_layers: Optional[List[str]] = None,
     use_float16: bool = True,
@@ -53,7 +55,7 @@ def compute_gradients(
     probs = F.softmax(logits, dim=-1)
     dist = torch.distributions.Categorical(probs)
 
-    log_prob = dist.log_prob(torch.tensor([action], device=observation.device))
+    log_prob = dist.log_prob(torch.tensor([action], device=logits.device))
     loss = -log_prob.mean() + 0.5 * value.mean()
     loss.backward()
 
@@ -72,7 +74,7 @@ def compute_gradients(
 
 def compute_ppo_gradients(
     model: ActorCritic,
-    observation: torch.Tensor,
+    observation: TensorObservation,
     action: torch.Tensor,
     old_log_prob: torch.Tensor,
     advantage: torch.Tensor,
@@ -184,9 +186,7 @@ def capture_ppo_gradients(
     """Capture per-step PPO gradients from a frozen checkpoint."""
     model_device = next(model.parameters()).device
     obs = env.reset()
-    obs_tensor = torch.tensor(
-        obs, dtype=torch.float32, device=model_device
-    ).unsqueeze(0)
+    obs_tensor = observation_to_torch(obs, model_device)
     action_tensor = torch.tensor(0, dtype=torch.long, device=model_device)
     test_grads = compute_ppo_gradients(
         model=model,
@@ -216,7 +216,7 @@ def capture_ppo_gradients(
         save_path,
         num_steps=estimated_steps,
         gradient_size=gradient_size,
-        image_shape=obs.shape,
+        image_shape=observation_image(obs).shape,
         compression=compression,
     )
 
@@ -237,9 +237,7 @@ def capture_ppo_gradients(
             recurrent_state = initial_recurrent_state(model, 1, model_device)
 
             while not done and ep_steps < max_steps:
-                obs_tensor = torch.tensor(
-                    obs, dtype=torch.float32, device=model_device
-                ).unsqueeze(0)
+                obs_tensor = observation_to_torch(obs, model_device)
                 state_before = recurrent_state
                 with torch.no_grad():
                     logits, value, next_recurrent_state = forward_actor_critic(
@@ -274,9 +272,7 @@ def capture_ppo_gradients(
                 bootstrap_value = 0.0
             else:
                 with torch.no_grad():
-                    next_obs_tensor = torch.tensor(
-                        obs, dtype=torch.float32, device=model_device
-                    ).unsqueeze(0)
+                    next_obs_tensor = observation_to_torch(obs, model_device)
                     _, next_val, _ = forward_actor_critic(
                         model, next_obs_tensor, recurrent_state
                     )
@@ -292,11 +288,9 @@ def capture_ppo_gradients(
                 advantages = [(a - adv_mean) / adv_std for a in advantages]
 
             for step_in_episode in range(len(ppo_buffer)):
-                step_obs_tensor = torch.tensor(
-                    ppo_buffer.obs_list[step_in_episode],
-                    dtype=torch.float32,
-                    device=model_device,
-                ).unsqueeze(0)
+                step_obs_tensor = observation_to_torch(
+                    ppo_buffer.obs_list[step_in_episode], model_device
+                )
                 step_action_tensor = torch.tensor(
                     ppo_buffer.actions[step_in_episode],
                     dtype=torch.long,
@@ -355,7 +349,9 @@ def capture_ppo_gradients(
                     ]:
                         f[key].resize(new_size, axis=0)
 
-                f["images"][step_idx] = ppo_buffer.obs_list[step_in_episode]
+                f["images"][step_idx] = observation_image(
+                    ppo_buffer.obs_list[step_in_episode]
+                )
                 f["gradients"][step_idx] = step_flat_grads
                 f["actions"][step_idx] = ppo_buffer.actions[step_in_episode]
                 f["rewards"][step_idx] = ppo_buffer.rewards[step_in_episode]
@@ -412,9 +408,7 @@ def capture_ppo_uniform_per_scene(
     """Capture a fixed number of exact per-step PPO gradients from each scene."""
     model_device = next(model.parameters()).device
     obs = env.reset(scene=scenes[0])
-    obs_tensor = torch.tensor(
-        obs, dtype=torch.float32, device=model_device
-    ).unsqueeze(0)
+    obs_tensor = observation_to_torch(obs, model_device)
     test_grads = compute_ppo_gradients(
         model=model,
         observation=obs_tensor,
@@ -497,7 +491,7 @@ def capture_ppo_uniform_per_scene(
             save_path,
             num_steps=total_steps,
             gradient_size=gradient_size,
-            image_shape=obs.shape,
+            image_shape=observation_image(obs).shape,
             compression=compression,
             with_ppo_targets=True,
         )
@@ -528,9 +522,7 @@ def capture_ppo_uniform_per_scene(
                 recurrent_state = initial_recurrent_state(model, 1, model_device)
 
                 while not done and len(ppo_buffer) < rollout_limit:
-                    obs_tensor = torch.tensor(
-                        obs, dtype=torch.float32, device=model_device
-                    ).unsqueeze(0)
+                    obs_tensor = observation_to_torch(obs, model_device)
                     state_before = recurrent_state
                     with torch.no_grad():
                         logits, value, next_recurrent_state = forward_actor_critic(
@@ -564,9 +556,7 @@ def capture_ppo_uniform_per_scene(
                     bootstrap_value = 0.0
                 else:
                     with torch.no_grad():
-                        next_obs_tensor = torch.tensor(
-                            obs, dtype=torch.float32, device=model_device
-                        ).unsqueeze(0)
+                        next_obs_tensor = observation_to_torch(obs, model_device)
                         _, next_value, _ = forward_actor_critic(
                             model, next_obs_tensor, recurrent_state
                         )
@@ -582,11 +572,9 @@ def capture_ppo_uniform_per_scene(
                     )
 
                 for step_in_episode in range(len(ppo_buffer)):
-                    step_obs = torch.tensor(
-                        ppo_buffer.obs_list[step_in_episode],
-                        dtype=torch.float32,
-                        device=model_device,
-                    ).unsqueeze(0)
+                    step_obs = observation_to_torch(
+                        ppo_buffer.obs_list[step_in_episode], model_device
+                    )
                     step_action = torch.tensor(
                         ppo_buffer.actions[step_in_episode],
                         dtype=torch.long,
@@ -626,7 +614,9 @@ def capture_ppo_uniform_per_scene(
                         recurrent_state=step_recurrent_state,
                     )
 
-                    f["images"][step_idx] = ppo_buffer.obs_list[step_in_episode]
+                    f["images"][step_idx] = observation_image(
+                        ppo_buffer.obs_list[step_in_episode]
+                    )
                     f["gradients"][step_idx] = flatten_gradients(grads)
                     f["actions"][step_idx] = ppo_buffer.actions[step_in_episode]
                     f["rewards"][step_idx] = ppo_buffer.rewards[step_in_episode]

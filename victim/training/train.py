@@ -51,6 +51,7 @@ if __name__ == "__main__":
         max_steps=env_cfg.get("max_steps", 200),
         headless=env_cfg.get("headless", False),
         action_set=env_cfg.get("action_set", "nav5"),
+        observation_mode=env_cfg.get("observation_mode", "rgb"),
     )
 
     try:

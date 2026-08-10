@@ -15,6 +15,11 @@ from victim.models.actor_critic import (
     forward_actor_critic,
     initial_recurrent_state,
 )
+from victim.observations import (
+    index_observations,
+    observation_to_torch,
+    stack_observations,
+)
 
 def _resolve_device(requested: Optional[str]) -> torch.device:
     if requested and requested != "auto":
@@ -71,6 +76,7 @@ def train(
             "action_set": env.action_set,
             "action_names": env.action_names,
             "image_size": list(env.image_size),
+            "observation_mode": env.observation_mode,
         },
     }
 
@@ -122,9 +128,7 @@ def train(
         recurrent_state = initial_recurrent_state(model, 1, run_device)
 
         for _ in range(steps_per_update):
-            obs_tensor = torch.tensor(
-                obs, dtype=torch.float32, device=run_device
-            ).unsqueeze(0)
+            obs_tensor = observation_to_torch(obs, run_device)
             state_before = recurrent_state
             with torch.no_grad():
                 logits, value, next_recurrent_state = forward_actor_critic(
@@ -167,9 +171,7 @@ def train(
             else:
                 obs = next_obs
 
-        last_obs_tensor = torch.tensor(
-            obs, dtype=torch.float32, device=run_device
-        ).unsqueeze(0)
+        last_obs_tensor = observation_to_torch(obs, run_device)
         with torch.no_grad():
             _, last_val, _ = forward_actor_critic(
                 model, last_obs_tensor, recurrent_state
@@ -180,9 +182,7 @@ def train(
             rewards_list, values_for_gae, dones_list, gamma=gamma, lam=lam
         )
 
-        obs_batch = torch.tensor(
-            np.stack(obs_list), dtype=torch.float32, device=run_device
-        )
+        obs_batch = stack_observations(obs_list, run_device)
         actions_batch = torch.tensor(
             actions_list, dtype=torch.long, device=run_device
         )
@@ -202,14 +202,14 @@ def train(
             else None
         )
 
-        n_samples = obs_batch.size(0)
+        n_samples = len(obs_list)
         inds = np.arange(n_samples)
 
         for _ in range(ppo_epochs):
             np.random.shuffle(inds)
             for start in range(0, n_samples, mini_batch_size):
                 mb_inds = inds[start : start + mini_batch_size]
-                mb_obs = obs_batch[mb_inds]
+                mb_obs = index_observations(obs_batch, mb_inds)
                 mb_actions = actions_batch[mb_inds]
                 mb_old_logp = old_logp_batch[mb_inds]
                 mb_returns = returns_batch[mb_inds]

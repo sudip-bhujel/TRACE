@@ -56,6 +56,7 @@ if __name__ == "__main__":
         max_steps=env_cfg.get("max_steps", 200),
         headless=env_cfg.get("headless", False),
         action_set=env_cfg.get("action_set", "nav5"),
+        observation_mode=env_cfg.get("observation_mode", "rgb"),
     )
     if env.action_space_n != model.num_actions:
         raise ValueError(
@@ -170,6 +171,7 @@ if __name__ == "__main__":
             h5_file.attrs["num_actions"] = model.num_actions
             h5_file.attrs["action_set"] = env.action_set
             h5_file.attrs["action_names"] = json.dumps(env.action_names)
+            h5_file.attrs["observation_mode"] = env.observation_mode
 
         print_file_info(save_path)
     finally:

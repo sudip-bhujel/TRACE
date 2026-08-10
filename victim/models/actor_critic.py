@@ -1,8 +1,10 @@
 from collections import namedtuple
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
+
+TensorObservation = Union[torch.Tensor, Dict[str, torch.Tensor]]
 
 Transition = namedtuple(
     "Transition", ["obs", "action", "logp", "reward", "done", "value"]
@@ -156,7 +158,7 @@ class RecurrentActorCritic(nn.Module):
 
 def forward_actor_critic(
     model: nn.Module,
-    observations: torch.Tensor,
+    observations: TensorObservation,
     recurrent_state: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
     """Run feed-forward and recurrent victims through one explicit interface."""
@@ -273,6 +275,65 @@ class LargeIMPALAActorCritic(IMPALAActorCritic):
         )
 
 
+class RGBGoalActorCritic(nn.Module):
+    """CNN policy that fuses RGB features with an egocentric point-goal vector."""
+
+    def __init__(
+        self,
+        in_channels: int = 3,
+        num_actions: int = 5,
+        goal_dim: int = 3,
+        hidden_size: int = 512,
+    ):
+        super().__init__()
+        self.architecture = "cnn_rgb_goal"
+        self.num_actions = num_actions
+        self.goal_dim = goal_dim
+
+        self.visual_encoder = nn.Sequential(
+            conv_block(in_channels, 32, k=8, s=4, p=2),
+            conv_block(32, 64, k=4, s=2, p=1),
+            conv_block(64, 64, k=3, s=1, p=1),
+            conv_block(64, 64, k=3, s=2, p=1),
+            _ReshapeFlatten(),
+        )
+        with torch.no_grad():
+            dummy = torch.zeros(1, in_channels, 84, 84)
+            visual_dim = self.visual_encoder(dummy).shape[1]
+
+        self.visual_fc = nn.Sequential(
+            nn.Linear(visual_dim, hidden_size),
+            nn.ReLU(),
+        )
+        self.goal_encoder = nn.Sequential(
+            nn.Linear(goal_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+        )
+        self.fusion = nn.Sequential(
+            nn.Linear(hidden_size + 128, hidden_size),
+            nn.ReLU(),
+        )
+        self.policy = nn.Linear(hidden_size, num_actions)
+        self.value = nn.Linear(hidden_size, 1)
+
+    def forward(
+        self, observation: TensorObservation
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not isinstance(observation, dict):
+            raise TypeError("cnn_rgb_goal expects {'rgb': ..., 'goal': ...}")
+        if "rgb" not in observation or "goal" not in observation:
+            raise KeyError("cnn_rgb_goal requires both 'rgb' and 'goal' observations")
+
+        rgb = observation["rgb"].float() / 255.0
+        goal = observation["goal"].float()
+        visual_features = self.visual_fc(self.visual_encoder(rgb))
+        goal_features = self.goal_encoder(goal)
+        hidden = self.fusion(torch.cat((visual_features, goal_features), dim=-1))
+        return self.policy(hidden), self.value(hidden).squeeze(-1)
+
+
 class TinyViTActorCritic(nn.Module):
     """Small ViT victim with the same policy/value interface as the CNN."""
 
@@ -369,6 +430,11 @@ def build_actor_critic(
             in_channels=in_channels,
             num_actions=num_actions,
         )
+    if architecture in {"cnn_rgb_goal", "rgb_goal_cnn", "multimodal_cnn"}:
+        return RGBGoalActorCritic(
+            in_channels=in_channels,
+            num_actions=num_actions,
+        )
     if architecture in {"tiny_vit", "tinyvit"}:
         return TinyViTActorCritic(
             in_channels=in_channels,
@@ -376,7 +442,7 @@ def build_actor_critic(
         )
     raise ValueError(
         f"Unknown victim architecture '{architecture}'. "
-        "Choose: cnn, cnn_gru, impala_cnn, impala_large, tiny_vit"
+        "Choose: cnn, cnn_gru, cnn_rgb_goal, impala_cnn, impala_large, tiny_vit"
     )
 
 
