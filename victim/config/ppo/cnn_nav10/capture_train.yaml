@@ -1,0 +1,15 @@
+# PPO gradient capture for the CNN/Nav10 training split.
+# Usage: uv run -m victim.capture.capture victim/config/ppo/cnn_nav10/capture_train.yaml
+
+_base_: ../capture_train.yaml
+
+environment:
+  action_set: nav10
+
+model:
+  checkpoint: ckpts/victim/ppo/cnn_nav10/ppo_ai2thor_final.pt
+  architecture: cnn
+  num_actions: 10
+
+capture:
+  save_path: trajectory_data/ppo/cnn_nav10/gradients_train.h5

@@ -19,7 +19,8 @@ class AI2THORNavEnv:
     an egocentric point-goal vector: normalized distance, sine, and cosine of
     the relative bearing.
     The default ``nav5`` action set preserves the original five action indices.
-    ``nav8`` appends MoveBack, MoveLeft, and MoveRight.
+    ``nav8`` appends MoveBack, MoveLeft, and MoveRight. ``nav10`` adds
+    crouching and standing as distinct embodied navigation actions.
     Reward: -0.01 per step, +1.0 if the agent reaches the target.
     """
 
@@ -40,6 +41,18 @@ class AI2THORNavEnv:
             {"action": "MoveBack"},
             {"action": "MoveLeft"},
             {"action": "MoveRight"},
+        ],
+        "nav10": [
+            {"action": "MoveAhead"},
+            {"action": "RotateLeft", "degrees": 15},
+            {"action": "RotateRight", "degrees": 15},
+            {"action": "LookDown", "degrees": 15},
+            {"action": "LookUp", "degrees": 15},
+            {"action": "MoveBack"},
+            {"action": "MoveLeft"},
+            {"action": "MoveRight"},
+            {"action": "Crouch"},
+            {"action": "Stand"},
         ],
     }
     # Backward-compatible alias for code that reads the original class attribute.
