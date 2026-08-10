@@ -1,0 +1,14 @@
+# PPO victim training: CNN-GRU policy with five navigation actions.
+# Usage: uv run -m victim.training.train victim/config/ppo/recurrent_nav5/train.yaml
+
+_base_: ../train.yaml
+
+model:
+  architecture: cnn_gru
+
+environment:
+  action_set: nav5
+
+output:
+  save_dir: ckpts/victim/ppo/recurrent_nav5
+  plot_path: output/victim_ppo_recurrent_nav5.png

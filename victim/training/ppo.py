@@ -9,7 +9,12 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from victim.environment import AI2THORNavEnv
-from victim.models.actor_critic import build_actor_critic, compute_gae
+from victim.models.actor_critic import (
+    build_actor_critic,
+    compute_gae,
+    forward_actor_critic,
+    initial_recurrent_state,
+)
 
 def _resolve_device(requested: Optional[str]) -> torch.device:
     if requested and requested != "auto":
@@ -106,6 +111,7 @@ def train(
     for update in range(start_update, total_updates + 1):
         obs_list, actions_list, logp_list = [], [], []
         rewards_list, dones_list, values_list = [], [], []
+        recurrent_states_list = []
 
         if scenes and len(scenes) > 1:
             current_scene = random.choice(scenes)
@@ -113,16 +119,23 @@ def train(
         else:
             current_scene = env.scene
             obs = env.reset()
+        recurrent_state = initial_recurrent_state(model, 1, run_device)
 
         for _ in range(steps_per_update):
             obs_tensor = torch.tensor(
                 obs, dtype=torch.float32, device=run_device
             ).unsqueeze(0)
-            logits, value = model(obs_tensor)
-            probs = F.softmax(logits, dim=-1)
-            dist = torch.distributions.Categorical(probs)
-            action = dist.sample().item()
-            logp = dist.log_prob(torch.tensor(action, device=run_device)).item()
+            state_before = recurrent_state
+            with torch.no_grad():
+                logits, value, next_recurrent_state = forward_actor_critic(
+                    model, obs_tensor, recurrent_state
+                )
+                probs = F.softmax(logits, dim=-1)
+                dist = torch.distributions.Categorical(probs)
+                action = dist.sample().item()
+                logp = dist.log_prob(
+                    torch.tensor(action, device=run_device)
+                ).item()
 
             next_obs, reward, done, info = env.step(action)
 
@@ -132,6 +145,10 @@ def train(
             rewards_list.append(reward)
             dones_list.append(done)
             values_list.append(value.item())
+            if state_before is not None:
+                recurrent_states_list.append(state_before.squeeze(0).detach())
+                assert next_recurrent_state is not None
+                recurrent_state = next_recurrent_state.detach()
 
             current_episode_reward += reward
             global_step += 1
@@ -146,13 +163,17 @@ def train(
                 else:
                     current_scene = env.scene
                     obs = env.reset()
+                recurrent_state = initial_recurrent_state(model, 1, run_device)
             else:
                 obs = next_obs
 
         last_obs_tensor = torch.tensor(
             obs, dtype=torch.float32, device=run_device
         ).unsqueeze(0)
-        _, last_val = model(last_obs_tensor)
+        with torch.no_grad():
+            _, last_val, _ = forward_actor_critic(
+                model, last_obs_tensor, recurrent_state
+            )
         values_for_gae = values_list + [last_val.item()]
 
         advantages, returns = compute_gae(
@@ -175,6 +196,11 @@ def train(
         adv_batch = (adv_batch - adv_batch.mean()) / (
             adv_batch.std(unbiased=False) + 1e-8
         )
+        recurrent_states_batch = (
+            torch.stack(recurrent_states_list)
+            if recurrent_states_list
+            else None
+        )
 
         n_samples = obs_batch.size(0)
         inds = np.arange(n_samples)
@@ -188,8 +214,15 @@ def train(
                 mb_old_logp = old_logp_batch[mb_inds]
                 mb_returns = returns_batch[mb_inds]
                 mb_adv = adv_batch[mb_inds]
+                mb_recurrent_state = (
+                    recurrent_states_batch[mb_inds]
+                    if recurrent_states_batch is not None
+                    else None
+                )
 
-                logits, values = model(mb_obs)
+                logits, values, _ = forward_actor_critic(
+                    model, mb_obs, mb_recurrent_state
+                )
                 probs = F.softmax(logits, dim=-1)
                 dist = torch.distributions.Categorical(probs)
                 mb_logp = dist.log_prob(mb_actions)

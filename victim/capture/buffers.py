@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -25,6 +25,7 @@ class PPOGradientBuffer:
         done: bool,
         value: float,
         log_prob: float,
+        recurrent_state: Optional[np.ndarray] = None,
     ) -> None:
         self.obs_list.append(obs)
         self.actions.append(action)
@@ -32,6 +33,7 @@ class PPOGradientBuffer:
         self.dones.append(done)
         self.values.append(value)
         self.log_probs.append(log_prob)
+        self.recurrent_states.append(recurrent_state)
 
     def compute_gae_and_returns(
         self, next_value: float = 0.0
@@ -51,6 +53,7 @@ class PPOGradientBuffer:
         self.dones: List[bool] = []
         self.values: List[float] = []
         self.log_probs: List[float] = []
+        self.recurrent_states: List[Optional[np.ndarray]] = []
 
     def __len__(self) -> int:
         return len(self.obs_list)

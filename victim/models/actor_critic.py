@@ -1,5 +1,5 @@
 from collections import namedtuple
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -91,6 +91,92 @@ class ActorCritic(nn.Module):
         z = self.encoder(x)
         h = self.fc(z)
         return self.policy(h), self.value(h).squeeze(-1)
+
+
+class RecurrentActorCritic(nn.Module):
+    """CNN actor-critic with a GRU state carried across environment steps."""
+
+    def __init__(
+        self,
+        in_channels: int = 3,
+        num_actions: int = 5,
+        hidden_size: int = 256,
+    ):
+        super().__init__()
+        self.architecture = "cnn_gru"
+        self.num_actions = num_actions
+        self.hidden_size = hidden_size
+        self.is_recurrent = True
+
+        self.encoder = nn.Sequential(
+            conv_block(in_channels, 32, k=8, s=4, p=2),
+            conv_block(32, 64, k=4, s=2, p=1),
+            conv_block(64, 64, k=3, s=1, p=1),
+            conv_block(64, 64, k=3, s=2, p=1),
+            _ReshapeFlatten(),
+        )
+
+        with torch.no_grad():
+            dummy = torch.zeros(1, in_channels, 84, 84)
+            conv_dim = self.encoder(dummy).shape[1]
+
+        self.fc = nn.Sequential(
+            nn.Linear(conv_dim, hidden_size),
+            nn.ReLU(),
+        )
+        self.gru = nn.GRUCell(hidden_size, hidden_size)
+        self.policy = nn.Linear(hidden_size, num_actions)
+        self.value = nn.Linear(hidden_size, 1)
+
+    def initial_state(
+        self,
+        batch_size: int,
+        device: Optional[torch.device] = None,
+    ) -> torch.Tensor:
+        if device is None:
+            device = next(self.parameters()).device
+        return torch.zeros(batch_size, self.hidden_size, device=device)
+
+    def forward_recurrent(
+        self,
+        x: torch.Tensor,
+        recurrent_state: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        x = x.float() / 255.0
+        features = self.fc(self.encoder(x))
+        if recurrent_state is None:
+            recurrent_state = self.initial_state(features.shape[0], features.device)
+        hidden = self.gru(features, recurrent_state)
+        return self.policy(hidden), self.value(hidden).squeeze(-1), hidden
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        logits, value, _ = self.forward_recurrent(x)
+        return logits, value
+
+
+def forward_actor_critic(
+    model: nn.Module,
+    observations: torch.Tensor,
+    recurrent_state: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    """Run feed-forward and recurrent victims through one explicit interface."""
+    if getattr(model, "is_recurrent", False):
+        logits, value, next_state = model.forward_recurrent(
+            observations, recurrent_state
+        )
+        return logits, value, next_state
+    logits, value = model(observations)
+    return logits, value, None
+
+
+def initial_recurrent_state(
+    model: nn.Module,
+    batch_size: int,
+    device: torch.device,
+) -> Optional[torch.Tensor]:
+    if getattr(model, "is_recurrent", False):
+        return model.initial_state(batch_size, device)
+    return None
 
 
 class _ImpalaResidualBlock(nn.Module):
@@ -248,6 +334,11 @@ def build_actor_critic(
     architecture = architecture.lower()
     if architecture == "cnn":
         return ActorCritic(in_channels=in_channels, num_actions=num_actions)
+    if architecture in {"cnn_gru", "recurrent_cnn", "gru"}:
+        return RecurrentActorCritic(
+            in_channels=in_channels,
+            num_actions=num_actions,
+        )
     if architecture in {"impala_cnn", "impala"}:
         return IMPALAActorCritic(
             in_channels=in_channels,
@@ -260,7 +351,7 @@ def build_actor_critic(
         )
     raise ValueError(
         f"Unknown victim architecture '{architecture}'. "
-        "Choose: cnn, impala_cnn, tiny_vit"
+        "Choose: cnn, cnn_gru, impala_cnn, tiny_vit"
     )
 
 
