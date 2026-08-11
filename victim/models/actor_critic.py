@@ -31,11 +31,31 @@ def compute_gae(
     return advantages, returns
 
 
+class _MpsSafeContiguousFunction(torch.autograd.Function):
+    """Keep tensors contiguous on both sides of an autograd operation."""
+
+    @staticmethod
+    def forward(ctx, x: torch.Tensor) -> torch.Tensor:
+        return x.contiguous()
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
+        return grad_output.contiguous()
+
+
+class _MpsSafeBatchNorm2d(nn.BatchNorm2d):
+    """BatchNorm with contiguous input and output-gradient boundaries for MPS."""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        normalized = super().forward(x.contiguous())
+        return _MpsSafeContiguousFunction.apply(normalized)
+
+
 def conv_block(in_c: int, out_c: int, k: int = 3, s: int = 2, p: int = 1):
     return nn.Sequential(
         nn.Conv2d(in_c, out_c, kernel_size=k, stride=s, padding=p),
         nn.ReLU(),
-        nn.BatchNorm2d(out_c),
+        _MpsSafeBatchNorm2d(out_c),
     )
 
 
@@ -145,9 +165,10 @@ class RecurrentActorCritic(nn.Module):
         recurrent_state: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         x = x.float() / 255.0
-        features = self.fc(self.encoder(x))
+        features = self.fc(self.encoder(x)).contiguous()
         if recurrent_state is None:
             recurrent_state = self.initial_state(features.shape[0], features.device)
+        recurrent_state = recurrent_state.contiguous()
         hidden = self.gru(features, recurrent_state)
         return self.policy(hidden), self.value(hidden).squeeze(-1), hidden
 
