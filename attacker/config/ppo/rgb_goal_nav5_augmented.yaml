@@ -1,0 +1,11 @@
+_base_: rgb_goal_nav5.yaml
+
+data:
+  h5_path: trajectory_data/ppo/rgb_goal_nav5/gradients_train_augmented.h5
+
+output:
+  save_dir: ckpts/trace/ppo/rgb_goal_nav5_augmented
+
+wandb:
+  name: rgb-goal-nav5-augmented
+  tags: ["ppo", "cnn_rgb_goal", "multimodal", "nav5", "augmented"]

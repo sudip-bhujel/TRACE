@@ -1,0 +1,11 @@
+_base_: cnn_nav10.yaml
+
+data:
+  h5_path: trajectory_data/ppo/cnn_nav10/gradients_train_augmented.h5
+
+output:
+  save_dir: ckpts/trace/ppo/cnn_nav10_augmented
+
+wandb:
+  name: cnn-nav10-augmented
+  tags: ["ppo", "cnn", "nav10", "augmented"]

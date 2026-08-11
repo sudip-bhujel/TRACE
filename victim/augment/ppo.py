@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional, Tuple
 
 import h5py
 import numpy as np
@@ -9,7 +9,12 @@ from tqdm import tqdm
 from victim.augment.image import apply_color_jitter
 from victim.capture.buffers import PPOGradientBuffer
 from victim.capture.utils import _extract_flat_gradient
-from victim.models.actor_critic import ActorCritic
+from victim.models.actor_critic import (
+    ActorCritic,
+    forward_actor_critic,
+    initial_recurrent_state,
+)
+from victim.observations import NumpyObservation, observation_to_torch
 
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -21,7 +26,7 @@ else:
 
 def _compute_ppo_gradient_from_targets(
     model: ActorCritic,
-    image: np.ndarray,
+    observation: NumpyObservation,
     action: int,
     old_log_prob: float,
     advantage: float,
@@ -29,13 +34,12 @@ def _compute_ppo_gradient_from_targets(
     clip_eps: float = 0.2,
     vf_coef: float = 0.5,
     ent_coef: float = 0.01,
-) -> np.ndarray:
+    recurrent_state: Optional[torch.Tensor] = None,
+) -> Tuple[np.ndarray, Optional[torch.Tensor]]:
     model.zero_grad()
     model_device = next(model.parameters()).device
 
-    obs_tensor = torch.tensor(
-        image, dtype=torch.float32, device=model_device
-    ).unsqueeze(0)
+    obs_tensor = observation_to_torch(observation, model_device)
     action_tensor = torch.tensor(action, dtype=torch.long, device=model_device)
     old_logp_tensor = torch.tensor(
         old_log_prob, dtype=torch.float32, device=model_device
@@ -47,7 +51,9 @@ def _compute_ppo_gradient_from_targets(
         returns, dtype=torch.float32, device=model_device
     ).unsqueeze(0)
 
-    logits, value = model(obs_tensor)
+    logits, value, next_recurrent_state = forward_actor_critic(
+        model, obs_tensor, recurrent_state
+    )
     probs = F.softmax(logits, dim=-1)
     dist = torch.distributions.Categorical(probs)
     new_logp = dist.log_prob(action_tensor)
@@ -60,7 +66,12 @@ def _compute_ppo_gradient_from_targets(
     entropy = dist.entropy().mean()
     (policy_loss + vf_coef * value_loss - ent_coef * entropy).backward()
 
-    return _extract_flat_gradient(model)
+    return (
+        _extract_flat_gradient(model),
+        next_recurrent_state.detach()
+        if next_recurrent_state is not None
+        else None,
+    )
 
 
 def augment_ppo(
@@ -89,14 +100,30 @@ def augment_ppo(
 
     if all(available_targets):
         print("\n[PPO] Using exact PPO targets stored during capture")
+        model_device = next(model.parameters()).device
+        has_goals = "goals" in f_in
         for aug_num in range(num_augmentations):
             print(f"\n[Augmentation {aug_num + 1}/{num_augmentations}]")
+            current_episode_id = None
+            recurrent_state = None
             for i in tqdm(range(num_original), desc="Augmenting samples"):
                 image = apply_color_jitter(f_in["images"][i], **jitter_kwargs)
                 action = int(f_in["actions"][i])
-                flat_grads = _compute_ppo_gradient_from_targets(
+                episode_id = int(f_in["episode_ids"][i])
+                if episode_id != current_episode_id:
+                    recurrent_state = initial_recurrent_state(model, 1, model_device)
+                    current_episode_id = episode_id
+
+                observation: NumpyObservation = image
+                if has_goals:
+                    observation = {
+                        "rgb": image,
+                        "goal": f_in["goals"][i],
+                    }
+
+                flat_grads, recurrent_state = _compute_ppo_gradient_from_targets(
                     model,
-                    image,
+                    observation,
                     action,
                     float(f_in["old_log_probs"][i]),
                     float(f_in["advantages"][i]),
@@ -104,9 +131,12 @@ def augment_ppo(
                     clip_eps=clip_eps,
                     vf_coef=vf_coef,
                     ent_coef=ent_coef,
+                    recurrent_state=recurrent_state,
                 )
 
                 f_out["images"][out_idx] = image
+                if has_goals:
+                    f_out["goals"][out_idx] = f_in["goals"][i]
                 f_out["gradients"][out_idx] = flat_grads.astype(np.float16)
                 f_out["actions"][out_idx] = action
                 f_out["rewards"][out_idx] = f_in["rewards"][i]
@@ -118,6 +148,11 @@ def augment_ppo(
         return out_idx
 
     print("\n[PPO] Legacy dataset: reconstructing PPO targets from episode data")
+    if getattr(model, "is_recurrent", False) or "goals" in f_in:
+        raise ValueError(
+            "Recurrent and RGB-goal augmentation require exact PPO targets "
+            "stored during capture"
+        )
     episode_buffers: Dict[int, PPOGradientBuffer] = {}
 
     for i in tqdm(range(num_original), desc="Collecting episodes"):
@@ -163,7 +198,7 @@ def augment_ppo(
 
             for step_i in range(len(ep_buf)):
                 aug_image = apply_color_jitter(ep_buf.obs_list[step_i], **jitter_kwargs)
-                flat_grads = _compute_ppo_gradient_from_targets(
+                flat_grads, _ = _compute_ppo_gradient_from_targets(
                     model,
                     aug_image,
                     ep_buf.actions[step_i],

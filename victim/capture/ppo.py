@@ -19,7 +19,11 @@ from victim.models.actor_critic import (
     forward_actor_critic,
     initial_recurrent_state,
 )
-from victim.observations import observation_image, observation_to_torch
+from victim.observations import (
+    observation_goal,
+    observation_image,
+    observation_to_torch,
+)
 
 
 def _infer_written_steps(gradients: h5py.Dataset) -> int:
@@ -218,6 +222,7 @@ def capture_ppo_gradients(
         gradient_size=gradient_size,
         image_shape=observation_image(obs).shape,
         compression=compression,
+        goal_shape=(observation_goal(obs).shape if observation_goal(obs) is not None else None),
     )
 
     ppo_buffer = PPOGradientBuffer(gamma=gamma, lam=lam)
@@ -339,19 +344,25 @@ def capture_ppo_gradients(
 
                 if step_idx >= f["images"].shape[0]:
                     new_size = step_idx + estimated_steps
-                    for key in [
+                    resize_keys = [
                         "images",
                         "gradients",
                         "actions",
                         "rewards",
                         "episode_ids",
                         "done",
-                    ]:
+                    ]
+                    if "goals" in f:
+                        resize_keys.append("goals")
+                    for key in resize_keys:
                         f[key].resize(new_size, axis=0)
 
                 f["images"][step_idx] = observation_image(
                     ppo_buffer.obs_list[step_in_episode]
                 )
+                step_goal = observation_goal(ppo_buffer.obs_list[step_in_episode])
+                if step_goal is not None:
+                    f["goals"][step_idx] = step_goal
                 f["gradients"][step_idx] = step_flat_grads
                 f["actions"][step_idx] = ppo_buffer.actions[step_in_episode]
                 f["rewards"][step_idx] = ppo_buffer.rewards[step_in_episode]
@@ -366,7 +377,17 @@ def capture_ppo_gradients(
                 f"Trajectory {traj_idx + 1:4d}/{num_trajectories} | Steps: {ep_steps:3d} | Reward: {ep_reward:7.2f} | {success} | Total: {step_idx:,}"
             )
 
-        for key in ["images", "gradients", "actions", "rewards", "episode_ids", "done"]:
+        resize_keys = [
+            "images",
+            "gradients",
+            "actions",
+            "rewards",
+            "episode_ids",
+            "done",
+        ]
+        if "goals" in f:
+            resize_keys.append("goals")
+        for key in resize_keys:
             f[key].resize(step_idx, axis=0)
 
         f.attrs["num_trajectories"] = num_trajectories
@@ -447,6 +468,8 @@ def capture_ppo_uniform_per_scene(
                 "advantages",
                 "returns",
             }
+            if observation_goal(obs) is not None:
+                required_datasets.add("goals")
             missing = required_datasets.difference(existing.keys())
             if missing:
                 raise ValueError(
@@ -494,6 +517,7 @@ def capture_ppo_uniform_per_scene(
             image_shape=observation_image(obs).shape,
             compression=compression,
             with_ppo_targets=True,
+            goal_shape=(observation_goal(obs).shape if observation_goal(obs) is not None else None),
         )
         step_idx = 0
         episode_idx = 0
@@ -617,6 +641,11 @@ def capture_ppo_uniform_per_scene(
                     f["images"][step_idx] = observation_image(
                         ppo_buffer.obs_list[step_in_episode]
                     )
+                    step_goal = observation_goal(
+                        ppo_buffer.obs_list[step_in_episode]
+                    )
+                    if step_goal is not None:
+                        f["goals"][step_idx] = step_goal
                     f["gradients"][step_idx] = flatten_gradients(grads)
                     f["actions"][step_idx] = ppo_buffer.actions[step_in_episode]
                     f["rewards"][step_idx] = ppo_buffer.rewards[step_in_episode]

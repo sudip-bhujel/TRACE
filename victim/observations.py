@@ -1,4 +1,4 @@
-from typing import Dict, List, Union
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -59,3 +59,8 @@ def index_observations(
 def observation_image(observation: NumpyObservation) -> np.ndarray:
     """Return the private RGB reconstruction target from either observation form."""
     return observation["rgb"] if isinstance(observation, dict) else observation
+
+
+def observation_goal(observation: NumpyObservation) -> Optional[np.ndarray]:
+    """Return the point-goal modality when present."""
+    return observation.get("goal") if isinstance(observation, dict) else None

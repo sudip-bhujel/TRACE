@@ -113,6 +113,7 @@ def create_hdf5_dataset(
     compression_level: int = 4,
     with_next_images: bool = False,
     with_ppo_targets: bool = False,
+    goal_shape: Optional[Tuple[int, ...]] = None,
 ) -> None:
     """Pre-allocate HDF5 datasets for gradient capture."""
     with h5py.File(save_path, "w") as f:
@@ -125,6 +126,15 @@ def create_hdf5_dataset(
             compression=compression,
             compression_opts=compression_level,
         )
+        if goal_shape is not None:
+            f.create_dataset(
+                "goals",
+                shape=(num_steps, *goal_shape),
+                maxshape=(None, *goal_shape),
+                dtype=np.float32,
+                compression=compression,
+                compression_opts=compression_level,
+            )
         if with_next_images:
             f.create_dataset(
                 "next_images",

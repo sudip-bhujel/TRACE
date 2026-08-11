@@ -1,0 +1,11 @@
+_base_: impala_large_nav5.yaml
+
+data:
+  h5_path: trajectory_data/ppo/impala_large_nav5/gradients_train_augmented.h5
+
+output:
+  save_dir: ckpts/trace/ppo/impala_large_nav5_augmented
+
+wandb:
+  name: impala-large-nav5-augmented
+  tags: ["ppo", "impala_large", "residual", "nav5", "augmented"]

@@ -1,0 +1,11 @@
+_base_: recurrent_nav5.yaml
+
+data:
+  h5_path: trajectory_data/ppo/recurrent_nav5/gradients_train_augmented.h5
+
+output:
+  save_dir: ckpts/trace/ppo/recurrent_nav5_augmented
+
+wandb:
+  name: recurrent-nav5-augmented
+  tags: ["ppo", "cnn_gru", "recurrent", "nav5", "augmented"]

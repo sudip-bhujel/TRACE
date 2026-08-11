@@ -48,6 +48,8 @@ def augment_hdf5_dataset(
         metadata = dict(f_in.attrs)
         stored_architecture = f_in.attrs.get("victim_architecture")
         stored_num_actions = f_in.attrs.get("num_actions")
+        has_goals = "goals" in f_in
+        goal_shape = f_in["goals"].shape[1:] if has_goals else None
 
     if stored_architecture and stored_architecture != model.architecture:
         raise ValueError(
@@ -58,6 +60,11 @@ def augment_hdf5_dataset(
         raise ValueError(
             f"Dataset has {int(stored_num_actions)} actions, but augmentation "
             f"loaded a {model.num_actions}-action victim"
+        )
+    if model.architecture == "cnn_rgb_goal" and not has_goals:
+        raise ValueError(
+            "RGB-goal augmentation requires a 'goals' dataset. Recapture this "
+            "split with the current capture code before augmenting it."
         )
 
     num_augmented = num_original * num_augmentations
@@ -80,6 +87,15 @@ def augment_hdf5_dataset(
             compression="gzip",
             compression_opts=4,
         )
+        if has_goals:
+            assert goal_shape is not None
+            f_out.create_dataset(
+                "goals",
+                shape=(total_samples, *goal_shape),
+                dtype=np.float32,
+                compression="gzip",
+                compression_opts=4,
+            )
         f_out.create_dataset(
             "gradients",
             shape=(total_samples, gradient_size),
@@ -107,6 +123,10 @@ def augment_hdf5_dataset(
             ):
                 end_idx = min(start_idx + batch_size, num_original)
                 f_out["images"][start_idx:end_idx] = f_in["images"][start_idx:end_idx]
+                if has_goals:
+                    f_out["goals"][start_idx:end_idx] = f_in["goals"][
+                        start_idx:end_idx
+                    ]
                 f_out["gradients"][start_idx:end_idx] = f_in["gradients"][
                     start_idx:end_idx
                 ]
