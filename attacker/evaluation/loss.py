@@ -59,12 +59,18 @@ class TemporalCombinedLoss(nn.Module):
         pred_img_flat = pred_images.reshape(-1, *pred_images.shape[2:])
         target_img_flat = target_images.reshape(-1, *target_images.shape[2:])
         pred_act_flat = pred_actions.reshape(-1, pred_actions.shape[-1])
-        target_act_flat = target_actions.reshape(-1)
+        target_act_flat = (
+            target_actions.reshape_as(pred_act_flat)
+            if target_actions.ndim == pred_actions.ndim
+            else target_actions.reshape(-1)
+        )
 
         mse = self.mse_loss(pred_img_flat, target_img_flat)
         l1 = self.l1_loss(pred_img_flat, target_img_flat)
         action_loss = self.ce_loss(pred_act_flat, target_act_flat)
-        action_loss = torch.clamp(action_loss, max=2.0)
+        # Do not zero histogram gradients when the pretrained classifier is confident.
+        if target_actions.ndim != pred_actions.ndim:
+            action_loss = torch.clamp(action_loss, max=2.0)
 
         if self.lpips_loss is not None:
             lpips_val = self.lpips_loss(pred_img_flat, target_img_flat).mean()

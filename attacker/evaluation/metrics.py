@@ -32,6 +32,7 @@ METRIC_FORMATS: Dict[str, Tuple[str, str]] = {
     "lpips": (".4f", ""),
     "fid": (".2f", ""),
     "action_accuracy": (".1f", "%"),
+    "action_histogram_tv": (".4f", ""),
 }
 
 METRIC_LABELS: Dict[str, str] = {
@@ -42,6 +43,7 @@ METRIC_LABELS: Dict[str, str] = {
     "lpips": "LPIPS",
     "fid": "FID",
     "action_accuracy": "Action Accuracy",
+    "action_histogram_tv": "Action Histogram TV",
 }
 
 
@@ -66,6 +68,8 @@ def print_results(results: Dict[str, float], header: str = ""):
     if header:
         print(header)
     for key in METRIC_KEYS:
+        if key == "action_accuracy" and "action_histogram_tv" in results:
+            key = "action_histogram_tv"
         label = METRIC_LABELS.get(key, key)
         print(f"  {label + ':':<18} {format_metric(results, key)}")
 
@@ -88,6 +92,16 @@ def print_per_timestep_results(per_timestep: Dict[str, Dict[int, float]]):
             val = per_timestep[m].get(t, float("nan"))
             row += f"{format(val, fmt):<12}"
         print(row)
+
+
+@torch.no_grad()
+def action_metric(pred_actions: torch.Tensor, target_actions: torch.Tensor):
+    """Per-position accuracy (%) for labels, or total variation (0..1) for histograms."""
+    target_actions = target_actions.to(pred_actions.device)
+    if target_actions.ndim == pred_actions.ndim:
+        tv = 0.5 * (pred_actions.float().softmax(-1) - target_actions).abs().sum(-1)
+        return "action_histogram_tv", tv
+    return "accuracy", (pred_actions.argmax(-1) == target_actions).float() * 100
 
 
 def compute_psnr(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -318,6 +332,7 @@ class MetricsComputer:
 
         self.all_pred_actions: List[torch.Tensor] = []
         self.all_target_actions: List[torch.Tensor] = []
+        self.action_histogram_tv_values: List[float] = []
 
     @torch.no_grad()
     def update(
@@ -371,6 +386,10 @@ class MetricsComputer:
             self.real_features.append(self.inception(tgt_flat))
             self.fake_features.append(self.inception(pred_flat))
 
+        if target_actions.ndim == pred_actions.ndim:
+            _, tv = action_metric(pred_actions, target_actions)
+            self.action_histogram_tv_values.extend(tv.reshape(-1).cpu().tolist())
+            return
         if pred_actions.ndim == 3:
             pred_labels = pred_actions.argmax(dim=-1).reshape(-1)
             tgt_labels = target_actions.reshape(-1)
@@ -406,7 +425,11 @@ class MetricsComputer:
         else:
             results["fid"] = float("nan")
 
-        if self.all_pred_actions:
+        if self.action_histogram_tv_values:
+            results["action_histogram_tv"] = float(np.mean(self.action_histogram_tv_values))
+            if len(self.action_histogram_tv_values) >= 2:
+                results["action_histogram_tv_std"] = float(np.std(self.action_histogram_tv_values, ddof=1))
+        elif self.all_pred_actions:
             pred_all = torch.cat(self.all_pred_actions)
             tgt_all = torch.cat(self.all_target_actions)
             results["action_accuracy"] = (

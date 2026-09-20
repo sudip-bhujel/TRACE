@@ -19,9 +19,10 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
 import wandb
-from attacker.data.dataset import TemporalGradientDataset
+from attacker.data.dataset import TemporalGradientDataset, episode_split
 from attacker.evaluation.evaluate import evaluate
 from attacker.evaluation.loss import TemporalCombinedLoss
+from attacker.evaluation.metrics import action_metric
 from attacker.models.autoregressive_model import AutoregressiveGradientInversion
 from attacker.models.model import TemporalGradientInversion
 
@@ -144,18 +145,20 @@ def train_epoch(
         for k, v in loss_dict.items():
             total_losses[k] += v
 
-        pred_labels = pred_actions.argmax(dim=-1).flatten()
-        correct += (pred_labels == actions.flatten()).sum().item()
-        total += actions.numel()
+        metric_name, action_values = action_metric(pred_actions, actions)
+        correct += action_values.sum().item()
+        total += action_values.numel()
 
         pbar.set_postfix(
-            loss=f"{loss_dict['total']:.4f}", acc=f"{100 * correct / total:.1f}%"
+            loss=f"{loss_dict['total']:.4f}",
+            **({"acc": f"{correct / total:.1f}%"} if metric_name == "accuracy"
+               else {metric_name: f"{correct / total:.4f}"}),
         )
 
     # Average
     for k in total_losses:
         total_losses[k] /= len(dataloader)
-    total_losses["accuracy"] = 100 * correct / total
+    total_losses[metric_name] = correct / total
 
     return dict(total_losses)
 
@@ -198,13 +201,13 @@ def validate(
             for k, v in loss_dict.items():
                 total_losses[k] += v
 
-            pred_labels = pred_actions.argmax(dim=-1).flatten()
-            correct += (pred_labels == actions.flatten()).sum().item()
-            total += actions.numel()
+            metric_name, action_values = action_metric(pred_actions, actions)
+            correct += action_values.sum().item()
+            total += action_values.numel()
 
     for k in total_losses:
         total_losses[k] /= len(dataloader)
-    total_losses["accuracy"] = 100 * correct / total
+    total_losses[metric_name] = correct / total
 
     return dict(total_losses)
 
@@ -243,6 +246,8 @@ def save_temporal_reconstructions(
 
     pred_images = pred_images.cpu()
     pred_labels = pred_actions.argmax(dim=-1).cpu()
+    histogram_targets = actions.ndim == pred_actions.ndim
+    _, action_values = action_metric(pred_actions.cpu(), actions)
 
     T = images.shape[1]
 
@@ -259,14 +264,14 @@ def save_temporal_reconstructions(
             # Ground truth
             axes[row_gt, t].imshow(images[seq_idx, t].permute(1, 2, 0).numpy())
             axes[row_gt, t].set_title(
-                f"t={t} GT (a={actions[seq_idx, t].item()})", fontsize=8
+                f"window={t} GT" if histogram_targets else f"t={t} GT (a={actions[seq_idx, t].item()})", fontsize=8
             )
             axes[row_gt, t].axis("off")
 
             # Prediction
             axes[row_pred, t].imshow(pred_images[seq_idx, t].permute(1, 2, 0).numpy())
             axes[row_pred, t].set_title(
-                f"t={t} Pred (a={pred_labels[seq_idx, t].item()})", fontsize=8
+                f"window={t} Pred (TV={action_values[seq_idx, t]:.3f})" if histogram_targets else f"t={t} Pred (a={pred_labels[seq_idx, t].item()})", fontsize=8
             )
             axes[row_pred, t].axis("off")
 
@@ -339,6 +344,8 @@ def train(
     # Short rollout loss (autoregressive only)
     rollout_steps: int = 0,
     rollout_weight: float = 0.0,
+    split_by_episode: bool = False,
+    train_fraction: float = 1.0,
 ):
     """Run training; supports DDP when launched with torchrun."""
     ddp = int(os.environ.get("RANK", -1)) != -1
@@ -395,7 +402,15 @@ def train(
     )
     actual_gradient_dim = dataset.effective_gradient_dim
 
-    if finetune_fraction < 1.0:
+    if train_fraction != 1.0 and (not split_by_episode or max_sequences is not None):
+        raise ValueError("data.train_fraction requires split_by_episode: true and no max_sequences cap")
+    if dataset.action_target == "histogram" and not split_by_episode:
+        raise ValueError("Histogram training requires data.split_by_episode: true")
+    if split_by_episode:
+        if finetune_fraction < 1.0:
+            raise ValueError("Episode splitting cannot be combined with finetune_fraction < 1")
+        train_dataset, val_dataset = episode_split(dataset, train_fraction=train_fraction)
+    elif finetune_fraction < 1.0:
         # Stratified per-episode subsampling for few-shot fine-tuning.
         rng = random.Random(42)
         ep_to_seqs = {}
@@ -431,6 +446,8 @@ def train(
         print("\nDataset split:")
         print(f"  Train: {len(train_dataset)} sequences")
         print(f"  Val: {len(val_dataset)} sequences")
+        if split_by_episode:
+            print(f"  Training episode fraction: {train_fraction:.0%}; fixed validation episodes")
 
     train_sampler = DistributedSampler(train_dataset, shuffle=True) if ddp else None
     val_sampler = DistributedSampler(val_dataset, shuffle=False) if ddp else None
@@ -453,6 +470,7 @@ def train(
     )
 
     num_actions = dataset.num_actions
+    action_key = "action_histogram_tv" if dataset.action_target == "histogram" else "accuracy"
     if master_process:
         print(f"  Number of actions: {num_actions}")
 
@@ -517,16 +535,17 @@ def train(
             print(f"\n[RESUME] Loaded checkpoint from {resume_checkpoint}")
     elif pretrained_checkpoint:
         ckpt = torch.load(
-            pretrained_checkpoint, map_location=device, weights_only=False
+            pretrained_checkpoint, map_location="cpu", weights_only=False
         )
         state_dict = ckpt.get("model_state_dict", ckpt)
-        model.load_state_dict(state_dict, strict=False)
+        model.load_state_dict(state_dict, strict=dataset.action_target == "histogram")
         if master_process:
             pretrained_epoch = ckpt.get("epoch", "?")
             print(
                 f"\n[FINE-TUNING] Loaded pretrained weights from {pretrained_checkpoint}"
             )
             print(f"  Pretrained epoch: {pretrained_epoch}")
+        del state_dict, ckpt
 
     if ddp:
         model = DDP(
@@ -686,7 +705,9 @@ def train(
 
         if master_process:
             print(
-                f"Epoch {epoch}: Train Loss: {train_loss['total']:.4f} (MSE: {train_loss['mse']:.4f}, L1: {train_loss['l1']:.4f}, Act: {train_loss['action']:.4f}, Temp: {train_loss['temporal']:.4f}, LTemp: {train_loss.get('latent_temporal', 0):.4f}, LPIPS: {train_loss['lpips']:.4f}) | Acc: {train_loss['accuracy']:.2f}%"
+                f"Epoch {epoch}: Train Loss: {train_loss['total']:.4f} (MSE: {train_loss['mse']:.4f}, L1: {train_loss['l1']:.4f}, Act: {train_loss['action']:.4f}, Temp: {train_loss['temporal']:.4f}, LTemp: {train_loss.get('latent_temporal', 0):.4f}, LPIPS: {train_loss['lpips']:.4f}) | "
+                + (f"Acc: {train_loss[action_key]:.2f}%" if action_key == "accuracy"
+                   else f"Action Histogram TV: {train_loss[action_key]:.4f}")
             )
             if use_wandb:
                 log_dict = {
@@ -696,7 +717,7 @@ def train(
                     "train/action_loss": train_loss["action"],
                     "train/temporal_loss": train_loss["temporal"],
                     "train/lpips_loss": train_loss["lpips"],
-                    "train/accuracy": train_loss["accuracy"],
+                    f"train/{action_key}": train_loss[action_key],
                     "epoch": epoch,
                     "lr": optimizer.param_groups[0]["lr"],
                 }
@@ -713,7 +734,9 @@ def train(
 
         if master_process:
             print(
-                f"Epoch {epoch}: Val Loss: {val_loss['total']:.4f} (MSE: {val_loss['mse']:.4f}, L1: {val_loss['l1']:.4f}, Act: {val_loss['action']:.4f}, Temp: {val_loss['temporal']:.4f}, LTemp: {val_loss.get('latent_temporal', 0):.4f}, LPIPS: {val_loss['lpips']:.4f}) | Acc: {val_loss['accuracy']:.2f}%"
+                f"Epoch {epoch}: Val Loss: {val_loss['total']:.4f} (MSE: {val_loss['mse']:.4f}, L1: {val_loss['l1']:.4f}, Act: {val_loss['action']:.4f}, Temp: {val_loss['temporal']:.4f}, LTemp: {val_loss.get('latent_temporal', 0):.4f}, LPIPS: {val_loss['lpips']:.4f}) | "
+                + (f"Acc: {val_loss[action_key]:.2f}%" if action_key == "accuracy"
+                   else f"Action Histogram TV: {val_loss[action_key]:.4f}")
             )
             if use_wandb:
                 wandb.log(
@@ -724,7 +747,7 @@ def train(
                         "val/action_loss": val_loss["action"],
                         "val/temporal_loss": val_loss["temporal"],
                         "val/lpips_loss": val_loss["lpips"],
-                        "val/accuracy": val_loss["accuracy"],
+                        f"val/{action_key}": val_loss[action_key],
                     }
                 )
 
@@ -753,6 +776,8 @@ def train(
                     "decoder_type": decoder_type,
                     "gradient_dim": actual_gradient_dim,
                     "num_actions": num_actions,
+                    "aggregation_size": dataset.aggregation_size,
+                    "action_target": dataset.action_target,
                 },
                 save_dir / "best_model.pt",
             )
@@ -778,6 +803,8 @@ def train(
                 "val_losses": val_losses,
                 "gradient_dim": actual_gradient_dim,
                 "num_actions": num_actions,
+                "aggregation_size": dataset.aggregation_size,
+                "action_target": dataset.action_target,
             },
             save_dir / "final_model.pt",
         )
@@ -901,6 +928,8 @@ if __name__ == "__main__":
         scheduled_sampling_warmup=training_cfg.get("scheduled_sampling_warmup", 5),
         rollout_steps=training_cfg.get("rollout_steps", 0),
         rollout_weight=training_cfg.get("rollout_weight", 0.0),
+        split_by_episode=data_cfg.get("split_by_episode", False),
+        train_fraction=data_cfg.get("train_fraction", 1.0),
     )
 
     if is_master and eval_cfg.get("enabled", True):
@@ -912,7 +941,7 @@ if __name__ == "__main__":
             save_dir=str(Path(save_dir) / "eval_results"),
             num_sequences=eval_cfg.get("num_sequences", 5),
             sequence_length=seq_len,
-            stride=model_cfg.get("stride", 8),
+            stride=eval_cfg.get("stride", model_cfg.get("stride", 8)),
             gradient_dim=gradient_dim,
             gradient_layers=gradient_layers,
             num_actions=model_cfg.get("num_actions"),

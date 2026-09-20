@@ -1,11 +1,12 @@
-# TRACE training on raw PPO captures from the wider IMPALA/Nav5 victim.
-# Usage: sbatch -A $ACCOUNT_NAME attacker/scripts/train.sh attacker/config/ppo/impala_large_nav5.yaml
-
+# Auxiliary-data scaling: 100% of eligible training episodes, no augmentation.
+# Fixed 50 epochs, not a fixed number of optimizer updates.
 device: auto
 
 data:
-  h5_path: trajectory_data/ppo/impala_large_nav5/gradients_train.h5
-  gradient_dim: null
+  h5_path: trajectory_data/ppo/gradients_train.h5
+  gradient_dim: 936102
+  split_by_episode: true
+  train_fraction: 1
 
 model:
   model_type: autoregressive
@@ -13,15 +14,13 @@ model:
   sequence_length: 8
   latent_dim: 1024
   encoder_hidden_dim: 2048
-  # Keep the largest projection tensor below CUDA's indexing limit while
-  # retaining an attacker size close to the 2.27B default TRACE model.
-  encoder_projection_rank: 768
   stride: 2
   num_transformer_layers: 6
   num_heads: 8
   encoder_type: residual
   decoder_type: residual
   use_flash_attention: true
+  pretrained_checkpoint: null
 
 training:
   num_epochs: 50
@@ -49,17 +48,18 @@ loss:
   lpips_net: vgg
 
 output:
-  save_dir: ckpts/trace/ppo/impala_large_nav5
+  save_dir: ckpts/trace/ppo/auxiliary_scaling/100
 
 eval:
   enabled: true
-  h5_path: trajectory_data/ppo/impala_large_nav5/gradients_test.h5
+  h5_path: trajectory_data/ppo/gradients_test.h5
   num_sequences: 100
+  stride: 2
 
 wandb:
   enabled: true
   project: trace
-  name: impala-large-nav5
-  group: ppo/architecture-actions
+  name: ppo-auxiliary-100
+  group: ppo/auxiliary-scaling
   entity: gradinversion
-  tags: ["ppo", "impala_large", "residual", "nav5"]
+  tags: [ppo, auxiliary-scaling, unaugmented, "100"]

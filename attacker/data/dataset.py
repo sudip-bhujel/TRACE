@@ -4,7 +4,7 @@ from typing import List, Optional, Tuple, cast
 import h5py
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Subset
 
 
 class TemporalGradientDataset(Dataset):
@@ -82,14 +82,29 @@ class TemporalGradientDataset(Dataset):
             done_ds = cast(h5py.Dataset, h5_file["done"])
 
             self.images = torch.tensor(images_ds[:], dtype=torch.float32) / 255.0
-            self.actions = torch.tensor(actions_ds[:], dtype=torch.long)
+            self.action_target = "histogram" if actions_ds.ndim == 2 else "class"
+            self.actions = torch.tensor(
+                actions_ds[:],
+                dtype=torch.float32 if self.action_target == "histogram" else torch.long,
+            )
             self.episode_ids = torch.tensor(episode_ids_ds[:], dtype=torch.long)
+            self.split_episode_ids = torch.tensor(
+                h5_file["source_episode_ids"][:] if "source_episode_ids" in h5_file else episode_ids_ds[:],
+                dtype=torch.long,
+            )
             self.done = torch.tensor(done_ds[:], dtype=torch.bool)
+            self.aggregation_size = int(h5_file.attrs.get("aggregation_size", 1))
+            if self.aggregation_size > 1 and (
+                not h5_file.attrs.get("aggregation_complete", False)
+                or int(h5_file.attrs.get("completed_steps", -1)) != self.gradient_shape[0]
+            ):
+                raise ValueError("Aggregated dataset is incomplete; rerun preprocessing to a new file")
             stored_num_actions = h5_file.attrs.get("num_actions")
             stored_action_names = h5_file.attrs.get("action_names")
 
         inferred_num_actions = (
-            int(self.actions.max().item()) + 1 if len(self.actions) > 0 else 0
+            self.actions.shape[1] if self.action_target == "histogram"
+            else int(self.actions.max().item()) + 1 if len(self.actions) > 0 else 0
         )
         if (
             num_actions is not None
@@ -112,6 +127,16 @@ class TemporalGradientDataset(Dataset):
                 f"Dataset contains action index {inferred_num_actions - 1}, but "
                 f"num_actions is {self.num_actions}"
             )
+
+        if self.action_target == "histogram":
+            if (
+                self.actions.shape != (self.gradient_shape[0], self.num_actions)
+                or not torch.isfinite(self.actions).all()
+                or (self.actions < 0).any()
+                or not torch.allclose(self.actions.sum(-1), torch.ones(len(self.actions)), atol=1e-5)
+            ):
+                raise ValueError("Action histograms must be finite, nonnegative and sum to one")
+            print(f"  Targets: window-last RGB and action histograms; aggregation_size={self.aggregation_size}")
 
         self.action_names: Optional[List[str]] = None
         if stored_action_names is not None:
@@ -224,3 +249,23 @@ class TemporalGradientDataset(Dataset):
         actions = self.actions[start_idx:end_idx]
 
         return gradients, images, actions
+
+
+def episode_split(dataset, val_fraction=0.05, seed=42, train_fraction=1.0):
+    """Hold validation fixed and select nested fractions of training episodes."""
+    import random
+
+    groups = [int(dataset.split_episode_ids[start]) for start, _ in dataset.sequence_indices]
+    episodes = sorted(set(groups))
+    if len(episodes) < 2 or not 0 < val_fraction < 1:
+        raise ValueError("Episode splitting needs at least two eligible episodes and 0 < val_fraction < 1")
+    if not 0 < train_fraction <= 1:
+        raise ValueError("train_fraction must be in (0, 1]")
+    random.Random(seed).shuffle(episodes)
+    n_val = min(len(episodes) - 1, max(1, int(len(episodes) * val_fraction)))
+    val_episodes = set(episodes[:n_val])
+    n_train = max(1, int((len(episodes) - n_val) * train_fraction))
+    train_episodes = set(episodes[n_val:n_val + n_train])
+    train_indices = [i for i, ep in enumerate(groups) if ep in train_episodes]
+    val_indices = [i for i, ep in enumerate(groups) if ep in val_episodes]
+    return Subset(dataset, train_indices), Subset(dataset, val_indices)

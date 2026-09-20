@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 from attacker.data.dataset import TemporalGradientDataset
 from attacker.evaluation.metrics import (
     MetricsComputer,
+    action_metric,
     print_per_timestep_results,
     print_results,
 )
@@ -197,8 +198,12 @@ def evaluate_and_save_reconstructions(
 
         mse = ((pred_images_cpu - images) ** 2).mean().item()
         psnr = -10.0 * math.log10(max(mse, 1e-10))
-        correct = (pred_labels == actions).sum().item()
-        total = actions.numel()
+        action_key, action_values = action_metric(pred_actions.cpu(), actions)
+        histogram_targets = action_key == "action_histogram_tv"
+        action_summary = (
+            f"Action Histogram TV: {action_values.mean():.4f}"
+            if histogram_targets else f"Action Accuracy: {action_values.mean():.1f}%"
+        )
         evaluated += 1
 
         T = images.shape[1]
@@ -207,12 +212,16 @@ def evaluate_and_save_reconstructions(
         fig.subplots_adjust(wspace=0.07, hspace=0.12)
         for t in range(T):
             axes[0, t].imshow(images[0, t].permute(1, 2, 0).numpy())
-            axes[0, t].set_title(f"t={t}, a={actions[0, t].item()}", fontsize=10)
+            axes[0, t].set_title(
+                f"window={t}, last frame" if histogram_targets else f"t={t}, a={actions[0, t].item()}", fontsize=10
+            )
             axes[0, t].axis("off")
 
             pred_img = pred_images_cpu[0, t].permute(1, 2, 0).numpy().clip(0, 1)
             axes[1, t].imshow(pred_img)
-            axes[1, t].set_title(f"t={t}, a={pred_labels[0, t].item()}", fontsize=10)
+            axes[1, t].set_title(
+                f"window={t}, TV={action_values[0, t]:.3f}" if histogram_targets else f"t={t}, a={pred_labels[0, t].item()}", fontsize=10
+            )
             axes[1, t].axis("off")
 
         axes[0, 0].set_ylabel("Ground Truth", fontsize=10, rotation=90, labelpad=4)
@@ -233,7 +242,7 @@ def evaluate_and_save_reconstructions(
 
         print(
             f"Saved {stem.name} (.png/.pdf) | MSE: {mse:.4f} | PSNR: {psnr:.1f} dB"
-            f" | Action Accuracy: {100 * correct / total:.1f}%"
+            f" | {action_summary}"
         )
 
     results = metrics.compute()

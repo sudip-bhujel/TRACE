@@ -3,6 +3,9 @@ _base_: impala_large_nav5.yaml
 data:
   h5_path: trajectory_data/ppo/impala_large_nav5/gradients_train_augmented.h5
 
+model:
+  encoder_projection_rank: 768
+
 output:
   save_dir: ckpts/trace/ppo/impala_large_nav5_augmented
 
