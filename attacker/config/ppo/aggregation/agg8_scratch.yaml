@@ -1,17 +1,21 @@
-# Auxiliary-data scaling: 10% of eligible training episodes, no augmentation.
-# Fixed 50 epochs, not a fixed number of optimizer updates.
+# Preprocess first with attacker.tools.aggregate_gradients or attacker/scripts/aggregate.sh.
+# Then train with attacker/scripts/train.sh; no base checkpoint is required.
 device: auto
 
+aggregation:
+  group_size: 8
+  train_source: trajectory_data/ppo/gradients_train.h5
+  test_source: trajectory_data/ppo/gradients_test.h5
+
 data:
-  h5_path: trajectory_data/ppo/gradients_train.h5
+  h5_path: trajectory_data/ppo/gradients_train_agg8.h5
   gradient_dim: 936102
   split_by_episode: true
-  train_fraction: 0.1
 
 model:
   model_type: autoregressive
   num_actions: 5
-  sequence_length: 8
+  sequence_length: 8  # Eight aggregates cover 64 original steps.
   latent_dim: 1024
   encoder_hidden_dim: 2048
   stride: 2
@@ -20,7 +24,7 @@ model:
   encoder_type: residual
   decoder_type: residual
   use_flash_attention: true
-  pretrained_checkpoint: null
+  pretrained_checkpoint: ""
 
 training:
   num_epochs: 50
@@ -32,7 +36,6 @@ training:
   lr_schedule: cosine
   warmup_epochs: 5
   min_lr: 1e-6
-  gradient_noise_scale: 0.0
   scheduled_sampling_start: 0.1
   scheduled_sampling_end: 0.8
   scheduled_sampling_warmup: 5
@@ -48,18 +51,18 @@ loss:
   lpips_net: vgg
 
 output:
-  save_dir: ckpts/trace/ppo/auxiliary_scaling/10
+  save_dir: ckpts/trace/ppo/aggregation/agg8_scratch
 
 eval:
   enabled: true
-  h5_path: trajectory_data/ppo/gradients_test.h5
-  num_sequences: 100
-  stride: 2
+  h5_path: trajectory_data/ppo/gradients_test_agg8.h5
+  num_sequences: 39  # All non-overlapping sequences in the current 4,022-step test capture.
+  stride: 8
 
 wandb:
   enabled: true
   project: trace
-  name: ppo-auxiliary-10
-  group: ppo/auxiliary-scaling
+  name: ppo-agg8-scratch
+  group: ppo/aggregation
   entity: gradinversion
-  tags: [ppo, auxiliary-scaling, unaugmented, "10"]
+  tags: [ppo, aggregation, agg8, scratch]

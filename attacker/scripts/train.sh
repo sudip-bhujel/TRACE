@@ -2,11 +2,11 @@
 # Usage: source .env && sbatch -A $ACCOUNT_NAME attacker/scripts/train.sh <config_path>
 # Example: cd $SCRATCH/projects/grad_inversion && source .env && sbatch -A $ACCOUNT_NAME attacker/scripts/train.sh attacker/config/train_layers_dino.yaml
 
-#SBATCH --time=18:00:00
+#SBATCH --time=08:00:00
 #SBATCH --job-name=train
 #SBATCH --ntasks=1
 #SBATCH --partition=H8V141_SAP112M2000_L
-#SBATCH --gres=gpu:6
+#SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=48
 #SBATCH --mem=768G
 #SBATCH -e ./logs/err_%j.log

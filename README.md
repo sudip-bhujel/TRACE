@@ -92,6 +92,25 @@ uv run -m victim.augment.augment victim/config/a2c/augment_train.yaml
 
 The generated HDF5 files are expected at the paths specified in each experiment config (e.g., `trajectory_data/ppo/gradients_train_augmented.h5`).
 
+### Architecture and action-space experiments
+
+Use the same pipeline with a variant config:
+
+```bash
+VARIANT=cnn_nav8  # or tiny_vit_nav5, impala_nav5
+uv run -m victim.training.train victim/config/ppo/$VARIANT/train.yaml
+uv run -m victim.capture.capture victim/config/ppo/$VARIANT/capture_train.yaml
+uv run -m victim.capture.capture victim/config/ppo/$VARIANT/capture_test.yaml
+uv run -m attacker.training.train attacker/config/ppo/$VARIANT.yaml
+```
+
+For augmented training, retain the victim checkpoint and replace the last command with:
+
+```bash
+uv run -m victim.augment.augment victim/config/ppo/$VARIANT/augment_train.yaml
+uv run -m attacker.training.train attacker/config/ppo/${VARIANT}_augmented.yaml
+```
+
 ## Training
 
 ### Train TRACE
@@ -157,6 +176,30 @@ uv run -m attacker.training.train attacker/config/a2c/adaptation/10.yaml
 ```
 
 Available fractions: `10`, `20`, `30`, `40`, `50` (percent).
+
+### Gradient aggregation
+
+Run from `code/` using raw PPO captures. Four-step fine-tuning requires
+`ckpts/trace/ppo/base/best_model.pt`:
+
+```bash
+uv run -m attacker.tools.aggregate_gradients attacker/config/ppo/aggregation/agg4.yaml
+uv run -m attacker.evaluation.evaluate attacker/config/ppo/aggregation/eval_agg4_before.yaml
+uv run -m attacker.training.train attacker/config/ppo/aggregation/agg4.yaml
+```
+
+Eight-step training from scratch requires no base checkpoint:
+
+```bash
+uv run -m attacker.tools.aggregate_gradients attacker/config/ppo/aggregation/agg8_scratch.yaml
+uv run -m torch.distributed.run --standalone --nproc_per_node=4 \
+  -m attacker.training.train attacker/config/ppo/aggregation/agg8_scratch.yaml
+```
+
+Aggregation averages consecutive stored gradients within episodes, targeting
+the last frame and action histogram; it does not recompute PPO minibatch updates.
+Evaluation runs automatically after training and saves metrics and histograms
+under the configured output directory.
 
 ## Evaluation
 
