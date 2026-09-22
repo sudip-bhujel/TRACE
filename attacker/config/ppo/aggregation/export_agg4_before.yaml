@@ -1,0 +1,27 @@
+# Prediction export only; use attacker/scripts/eval.sh on one A100 GPU.
+device: auto
+
+data:
+  h5_path: trajectory_data/ppo/gradients_test_agg4.h5
+  gradient_dim: 936102
+
+model:
+  model_type: autoregressive
+  num_actions: 5
+  sequence_length: 8
+  stride: 8
+  latent_dim: 1024
+  encoder_hidden_dim: 2048
+  num_transformer_layers: 6
+  num_heads: 8
+  encoder_type: residual
+  decoder_type: residual
+
+eval:
+  checkpoint: ckpts/trace/ppo/base/best_model.pt
+  num_sequences: 100
+  teacher_forcing: false
+  compute_metrics: false
+
+output:
+  save_dir: ckpts/trace/ppo/aggregation/exports/before

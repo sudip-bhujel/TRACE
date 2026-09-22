@@ -1,5 +1,6 @@
 """Evaluate a trained gradient inversion model and produce metrics + reconstruction figures."""
 
+import json
 import math
 import sys
 from pathlib import Path
@@ -151,13 +152,16 @@ def evaluate_and_save_reconstructions(
     model_type: str = "temporal",
     teacher_forcing: bool = False,
     action_names: Optional[List[str]] = None,
+    compute_metrics: bool = True,
+    checkpoint_path: Optional[str] = None,
 ):
-    """Compute aggregate metrics and save reconstruction figures + confusion matrix."""
+    """Save reconstructions and histogram predictions, optionally computing metrics."""
     plt.rcParams["font.family"] = "serif"
     model.eval()
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    metrics = MetricsComputer(device, compute_fid_flag=enable_fid)
+    metrics = MetricsComputer(device, compute_fid_flag=enable_fid) if compute_metrics else None
+    histogram_records = []
 
     action_labels = action_names
     if action_labels is None or len(action_labels) != num_actions:
@@ -191,7 +195,8 @@ def evaluate_and_save_reconstructions(
             else:
                 pred_images, pred_actions, _, _ = model(gradients)
 
-        metrics.update(pred_images, images, pred_actions, actions)
+        if metrics is not None:
+            metrics.update(pred_images, images, pred_actions, actions)
 
         pred_images_cpu = pred_images.cpu()
         pred_labels = pred_actions.argmax(dim=-1).cpu()
@@ -200,6 +205,13 @@ def evaluate_and_save_reconstructions(
         psnr = -10.0 * math.log10(max(mse, 1e-10))
         action_key, action_values = action_metric(pred_actions.cpu(), actions)
         histogram_targets = action_key == "action_histogram_tv"
+        if histogram_targets:
+            histogram_records.append({
+                "sequence_index": seq_idx,
+                "target": actions[0].tolist(),
+                "prediction": pred_actions[0].float().softmax(-1).cpu().tolist(),
+                "tv": action_values[0].tolist(),
+            })
         action_summary = (
             f"Action Histogram TV: {action_values.mean():.4f}"
             if histogram_targets else f"Action Accuracy: {action_values.mean():.1f}%"
@@ -213,14 +225,14 @@ def evaluate_and_save_reconstructions(
         for t in range(T):
             axes[0, t].imshow(images[0, t].permute(1, 2, 0).numpy())
             axes[0, t].set_title(
-                f"window={t}, last frame" if histogram_targets else f"t={t}, a={actions[0, t].item()}", fontsize=10
+                f"Window {t}\nLast frame" if histogram_targets else f"t={t}, a={actions[0, t].item()}", fontsize=10
             )
             axes[0, t].axis("off")
 
             pred_img = pred_images_cpu[0, t].permute(1, 2, 0).numpy().clip(0, 1)
             axes[1, t].imshow(pred_img)
             axes[1, t].set_title(
-                f"window={t}, TV={action_values[0, t]:.3f}" if histogram_targets else f"t={t}, a={pred_labels[0, t].item()}", fontsize=10
+                f"TV={action_values[0, t]:.3f}" if histogram_targets else f"t={t}, a={pred_labels[0, t].item()}", fontsize=10
             )
             axes[1, t].axis("off")
 
@@ -234,6 +246,13 @@ def evaluate_and_save_reconstructions(
                 spine.set_visible(False)
 
         stem = save_dir / f"reconstruction_seq_{seq_idx + 1:03d}"
+        if not compute_metrics:
+            # Keep unlabelled RGB arrays for later before/after figure layouts.
+            np.savez_compressed(
+                stem.with_suffix(".npz"),
+                target_images=images[0].numpy(),
+                predicted_images=pred_images_cpu[0].numpy(),
+            )
         plt.savefig(
             stem.with_suffix(".png"), dpi=150, bbox_inches="tight", pad_inches=0.0
         )
@@ -244,6 +263,27 @@ def evaluate_and_save_reconstructions(
             f"Saved {stem.name} (.png/.pdf) | MSE: {mse:.4f} | PSNR: {psnr:.1f} dB"
             f" | {action_summary}"
         )
+
+    if histogram_records:
+        dataset = dataloader.dataset
+        with (save_dir / "action_histograms.json").open("w") as f:
+            json.dump({
+                "checkpoint": str(checkpoint_path) if checkpoint_path else None,
+                "h5_path": str(getattr(dataset, "h5_path", "")),
+                "sequence_length": getattr(dataset, "sequence_length", None),
+                "stride": getattr(dataset, "stride", None),
+                "batch_size": dataloader.batch_size,
+                "aggregation_size": getattr(dataset, "aggregation_size", None),
+                "teacher_forcing": teacher_forcing,
+                "action_names": action_labels,
+                "indexing": "sequence_index and window position are zero-based; figure numbers are sequence_index + 1",
+                "sequences": histogram_records,
+            }, f, indent=2, allow_nan=False)
+        print(f"  Action histograms saved to: {save_dir / 'action_histograms.json'}")
+
+    if metrics is None:
+        print(f"Exported {evaluated} sequences to {save_dir}; full metrics skipped.")
+        return {}
 
     results = metrics.compute()
 
@@ -307,6 +347,7 @@ def evaluate(
     use_rope: bool = False,
     model_type: str = "temporal",
     teacher_forcing: bool = False,
+    compute_metrics: bool = True,
     **kwargs,
 ):
     """Run full evaluation: load checkpoint, compute metrics, save reconstructions."""
@@ -384,6 +425,8 @@ def evaluate(
         model_type=model_type,
         teacher_forcing=teacher_forcing,
         action_names=dataset.action_names,
+        compute_metrics=compute_metrics,
+        checkpoint_path=checkpoint_path,
     )
 
 
@@ -431,4 +474,5 @@ if __name__ == "__main__":
         use_rope=model_cfg.get("use_rope", False),
         model_type=model_cfg.get("model_type", "autoregressive"),
         teacher_forcing=eval_cfg.get("teacher_forcing", False),
+        compute_metrics=eval_cfg.get("compute_metrics", True),
     )
