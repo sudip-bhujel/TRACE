@@ -12,32 +12,35 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+def load_histograms(path):
+    export = json.loads(path.read_text())
+    shape = (export["sequence_length"], len(export["action_names"]))
+    indexed = {}
+    for item in export["sequences"]:
+        index = item["sequence_index"]
+        if not isinstance(index, int) or index < 0 or index in indexed:
+            raise ValueError(f"Invalid or duplicate sequence index: {index}")
+        arrays = [np.asarray(item[key], dtype=float) for key in ("target", "prediction")]
+        for arr in arrays:
+            if (arr.shape != shape or not np.isfinite(arr).all() or (arr < 0).any()
+                    or not np.allclose(arr.sum(-1), 1, atol=1e-6)):
+                raise ValueError(f"Invalid action proportions in sequence {index + 1}")
+        indexed[index] = arrays
+    if not indexed:
+        raise ValueError("Export sequences must be nonempty")
+    return export, indexed
+
+
 def load_exports(root, comparison_path=None):
-    before, after = [json.loads(path.read_text()) for path in (
+    (before, left), (after, right) = [load_histograms(path) for path in (
         root / "before/action_histograms.json",
         comparison_path if comparison_path is not None else root / "after/action_histograms.json")]
     for key in ("h5_path", "sequence_length", "stride", "batch_size",
                 "aggregation_size", "teacher_forcing", "action_names"):
         if before[key] != after[key]:
             raise ValueError(f"Before/after export metadata differs: {key}")
-    records = []
-    shape = (before["sequence_length"], len(before["action_names"]))
-    for export in (before, after):
-        indexed = {}
-        for item in export["sequences"]:
-            index = item["sequence_index"]
-            if not isinstance(index, int) or index < 0 or index in indexed:
-                raise ValueError(f"Invalid or duplicate sequence index: {index}")
-            arrays = [np.asarray(item[key], dtype=float) for key in ("target", "prediction")]
-            for arr in arrays:
-                if (arr.shape != shape or not np.isfinite(arr).all() or (arr < 0).any()
-                        or not np.allclose(arr.sum(-1), 1, atol=1e-6)):
-                    raise ValueError(f"Invalid action proportions in sequence {index + 1}")
-            indexed[index] = arrays
-        records.append(indexed)
-    left, right = records
-    if not left or left.keys() != right.keys():
-        raise ValueError("Before/after sequence IDs must match and be nonempty")
+    if left.keys() != right.keys():
+        raise ValueError("Before/after sequence IDs must match")
     for index in left:
         if not np.array_equal(left[index][0], right[index][0]):
             raise ValueError(f"Ground-truth actions differ in sequence {index + 1}")
@@ -135,8 +138,32 @@ def plot_windows(output, stem, names, target, pred_before, pred_after, images, w
     plt.close(fig)
 
 
+def plot_error_panel(ax, errors):
+    averages = [values.mean(-1) for values in errors.values()]
+    positions = np.arange(len(errors)) * 0.7
+    boxes = ax.boxplot(averages, positions=positions, widths=0.45,
+                       patch_artist=True, showfliers=False, medianprops={"color": "black"})
+    rng = np.random.default_rng(0)
+    colors = {"Before fine-tuning": "#D55E00", "After fine-tuning": "#0072B2",
+              "From scratch": "#CC79A7", "Uniform baseline": "#009E73",
+              "Training-frequency baseline": "#9467BD"}
+    for x, label, values, box in zip(positions, errors, averages, boxes["boxes"]):
+        color = colors[label]
+        box.set(facecolor=color, alpha=0.25)
+        ax.scatter(x + rng.uniform(-0.13, 0.13, len(values)), values, s=12, color=color, alpha=0.5)
+        ax.scatter(x, values.mean(), marker="D", s=30, color="black", zorder=4)
+        ax.text(x, 0.97, rf"$\mu={values.mean():.3f}$", ha="center", va="top", fontsize=9)
+    ax.set(xticks=positions,
+           xticklabels=[label.replace(" fine-tuning", "\nfine-tuning").replace(" baseline", "\nbaseline").replace(" scratch", "\nscratch")
+                        for label in errors], ylim=(0, 1))
+    ax.tick_params(axis="x", labelsize=9)
+    ax.set_axisbelow(True)
+    ax.grid(axis="y", alpha=0.2)
+    ax.spines[["top", "right"]].set_visible(False)
+
+
 @plt.rc_context({"font.family": "DejaVu Serif"})
-def plot_summary(root, output, names, before, after, prior=None, scratch_path=None):
+def plot_summary(root, output, names, before, after, prior=None, scratch_path=None, agg8_path=None):
     ids = sorted(before)
     target, pre, post = [np.stack(arrays) for arrays in (
         [before[i][0] for i in ids], [before[i][1] for i in ids], [after[i][1] for i in ids])]
@@ -149,30 +176,38 @@ def plot_summary(root, output, names, before, after, prior=None, scratch_path=No
     errors["Uniform baseline"] = 0.5 * np.abs(np.full(len(names), 1 / len(names)) - target).sum(-1)
     if prior is not None:
         errors["Training-frequency baseline"] = 0.5 * np.abs(action_prior(len(names), prior) - target).sum(-1)
-    averages = [values.mean(-1) for values in errors.values()]
+    metadata = json.loads((root / "before/action_histograms.json").read_text())
+    panels = [("action_error_summary", errors)]
+    agg8_summary = None
+    if agg8_path is not None:
+        agg8, records = load_histograms(agg8_path)
+        if metadata["aggregation_size"] != 4 or agg8["aggregation_size"] != 8:
+            raise ValueError("Separate summary requires Agg4 and Agg8 exports")
+        for key in ("action_names", "sequence_length", "teacher_forcing"):
+            if agg8[key] != metadata[key]:
+                raise ValueError(f"Agg4/Agg8 export metadata differs: {key}")
+        agg8_ids = sorted(records)
+        truth, prediction = [np.stack([records[i][j] for i in agg8_ids]) for j in (0, 1)]
+        agg8_errors = {"From scratch": 0.5 * np.abs(prediction - truth).sum(-1),
+                       "Uniform baseline": 0.5 * np.abs(1 / len(names) - truth).sum(-1)}
+        panels.append(("action_error_summary_agg8", agg8_errors))
+        agg8_summary = {
+            "source_export": str(agg8_path.resolve()), "aggregation_size": 8,
+            "num_sequences": len(agg8_ids), "num_windows": int(truth.shape[0] * truth.shape[1]),
+            "mean_tv": {label: float(values.mean()) for label, values in agg8_errors.items()},
+            "per_sequence": [{"sequence_number": i + 1,
+                              **{label: float(values[s].mean()) for label, values in agg8_errors.items()}}
+                             for s, i in enumerate(agg8_ids)],
+        }
     output.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(4.2, 2.8))
-    boxes = ax.boxplot(averages, positions=np.arange(len(errors)), widths=0.45,
-                       patch_artist=True, showfliers=False, medianprops={"color": "black"})
-    rng = np.random.default_rng(0)
-    colors = ["#D55E00", "#0072B2"] + (["#CC79A7"] if scratch_path is not None else []) + ["#009E73", "#9467BD"]
-    for i, (values, color, box) in enumerate(zip(
-        averages, colors, boxes["boxes"])):
-        box.set(facecolor=color, alpha=0.25)
-        ax.scatter(i + rng.uniform(-0.13, 0.13, len(values)), values, s=12, color=color, alpha=0.5)
-        ax.scatter(i, values.mean(), marker="D", s=30, color="black", zorder=4)
-        ax.text(i, 0.97, f"{values.mean():.3f}", ha="center", va="top", fontsize=9)
-    ax.set(xticks=np.arange(len(errors)),
-           xticklabels=[label.replace(" fine-tuning", "\nfine-tuning").replace(" baseline", "\nbaseline").replace(" scratch", "\nscratch")
-                        for label in errors], ylim=(0, 1),
-           ylabel="Mean TV distance")
-    ax.set_axisbelow(True)
-    ax.grid(axis="y", alpha=0.2)
-    ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
-    for ext in ("png", "pdf"):
-        fig.savefig(output / f"action_error_summary.{ext}", dpi=180, bbox_inches="tight")
-    plt.close(fig)
+    for stem, values in panels:
+        fig, ax = plt.subplots(figsize=(2.6 if len(values) == 2 else 4.2, 2.8))
+        plot_error_panel(ax, values)
+        ax.set_ylabel("Mean TV distance")
+        fig.tight_layout()
+        for ext in ("png", "pdf"):
+            fig.savefig(output / f"{stem}.{ext}", dpi=180, bbox_inches="tight")
+        plt.close(fig)
 
     percentiles = (10, 50, 90)
     order = np.argsort(errors["After fine-tuning"].ravel(), kind="stable")
@@ -186,10 +221,10 @@ def plot_summary(root, output, names, before, after, prior=None, scratch_path=No
     plot_windows(output, "percentiles", names,
                  *[np.stack([arr[s, t] for s, t in positions]) for arr in (target, pre, post)],
                  frames, labels, prior)
-    metadata = json.loads((root / "before/action_histograms.json").read_text())
     (output / "summary.json").write_text(json.dumps({
         "source_exports": str(root.resolve()),
         "scratch_export": None if scratch_path is None else str(scratch_path.resolve()),
+        "agg8": agg8_summary,
         "aggregation_size": metadata["aggregation_size"],
         "num_sequences": len(ids), "num_windows": int(len(order)),
         "action_names": names,
@@ -214,6 +249,7 @@ def main():
     parser.add_argument("--sequences", type=int, nargs="+", help="One-based sequence numbers; default: all")
     parser.add_argument("--summary", action="store_true", help="Plot all-sequence TV and three percentile-selected windows")
     parser.add_argument("--scratch", type=Path, help="Add from-scratch action_histograms.json to the summary plot")
+    parser.add_argument("--agg8-scratch", type=Path, help="Add a separate Agg8 figure from action_histograms.json")
     parser.add_argument("--output", type=Path, help="Default: <exports>/figures (or figures/summary with --summary)")
     parser.add_argument("--prior", type=float, nargs="+",
                         help="Training action frequencies, in exported action order; default: uniform")
@@ -222,10 +258,12 @@ def main():
         parser.error("--summary uses all exported sequences; omit --sequences")
     if args.scratch and not args.summary:
         parser.error("--scratch requires --summary")
+    if args.agg8_scratch and not args.summary:
+        parser.error("--agg8-scratch requires --summary")
     names, before, after = load_exports(args.exports)
     if args.summary:
         output = args.output or args.exports / "figures/summary"
-        plot_summary(args.exports, output, names, before, after, args.prior, args.scratch)
+        plot_summary(args.exports, output, names, before, after, args.prior, args.scratch, args.agg8_scratch)
         print(f"Saved summary and percentile examples to {output}")
         return
     numbers = args.sequences if args.sequences is not None else [i + 1 for i in sorted(before)]

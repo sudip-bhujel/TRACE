@@ -66,6 +66,47 @@ def test_plot_aggregation():
         summary = json.loads((root / "summary/summary.json").read_text())
         assert summary["mean_tv"]["From scratch"] == 0
         assert summary["scratch_export"] == str(scratch_path.resolve())
+        agg8_path = root / "agg8.json"
+        agg8_payload = {**payload, "h5_path": "agg8.h5", "aggregation_size": 8,
+                        "sequences": [
+                            {"sequence_index": 0, "target": [[0.125, 0.875, 0, 0, 0]] * 8,
+                             "prediction": [[0.2] * 5] * 8},
+                            {"sequence_index": 1, "target": [[0.5, 0.5, 0, 0, 0]] * 8,
+                             "prediction": [[0.5, 0.5, 0, 0, 0]] * 8}]}
+        agg8_path.write_text(json.dumps(agg8_payload))
+        panel_colors = []
+        def check_panels(fig):
+            if hasattr(fig, "axes") and len(fig.axes) == 1:
+                ax = fig.axes[0]
+                assert fig._suptitle is None and ax.get_title() == ax.get_xlabel() == ""
+                assert np.allclose(np.diff(ax.get_xticks()), 0.7)
+                assert ax.get_ylim() == (0, 1)
+                assert all(text.get_text().startswith(r"$\mu=") for text in ax.texts)
+                fig.canvas.draw()
+                ticks = [label.get_window_extent(fig.canvas.get_renderer()) for label in ax.get_xticklabels()]
+                assert all(a.x1 < b.x0 for a, b in zip(ticks, ticks[1:]))
+                panel_colors.append([box.get_facecolor() for box in ax.patches])
+            return close(fig)
+        with patch("matplotlib.pyplot.close", side_effect=check_panels):
+            plot_summary(root, root / "summary", names, before, ranked_after,
+                         scratch_path=scratch_path, agg8_path=agg8_path)
+        assert [len(colors) for colors in panel_colors] == [4, 2]
+        assert panel_colors[0][2:] == panel_colors[1]
+        assert len(list((root / "summary").glob("*"))) == 9
+        assert (root / "summary/action_error_summary_agg8.pdf").is_file()
+        summary = json.loads((root / "summary/summary.json").read_text())
+        assert summary["agg8"]["num_sequences"] == 2 and summary["agg8"]["num_windows"] == 16
+        assert np.isclose(summary["agg8"]["mean_tv"]["From scratch"], 0.3375)
+        assert np.isclose(summary["agg8"]["mean_tv"]["Uniform baseline"], 0.6375)
+        assert np.isclose(summary["mean_tv"]["Uniform baseline"], 0.6)
+        agg8_payload["aggregation_size"] = 4
+        agg8_path.write_text(json.dumps(agg8_payload))
+        try:
+            plot_summary(root, root / "summary", names, before, ranked_after, agg8_path=agg8_path)
+        except ValueError as exc:
+            assert "requires Agg4 and Agg8" in str(exc)
+        else:
+            raise AssertionError("Wrong aggregation size was accepted")
         payload["stride"] = 2
         scratch_path.write_text(json.dumps(payload))
         try:
