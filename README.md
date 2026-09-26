@@ -4,8 +4,6 @@
 
 <sup>1</sup> University of Kentucky &nbsp;&nbsp; <sup>2</sup> Washington University in St. Louis
 
-**NeurIPS 2026**
-
 [![Website](https://img.shields.io/badge/Website-Page-d47a7a?style=flat)](https://sudipbhujel.com.np/TRACE/)
 [![GitHub](https://img.shields.io/badge/GitHub-code-6b9f3a?style=flat&logo=github&logoColor=white)](https://github.com/sudip-bhujel/TRACE)
 [![Paper](https://img.shields.io/badge/Paper-PDF-b31b1b?style=flat&logo=openaccess&logoColor=f68212)](https://arxiv.org/pdf/2609.30258)
