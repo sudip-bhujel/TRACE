@@ -1,5 +1,16 @@
 # Temporal Gradient Inversion for Private Trajectory Reconstruction in Embodied Reinforcement Learning
 
+[Sudip Bhujel](https://sudipbhujel.com.np)<sup>1</sup>, [Shanghao Shi](https://shishishi123.github.io/)<sup>2</sup>, [Ruiquan Huang](https://ruiquan5514.github.io/)<sup>1</sup>, [Ning Zhang](https://engineering.washu.edu/faculty/Ning-Zhang.html)<sup>2</sup>, [Yang Xiao](https://yang-sec.github.io/yang/index.html)<sup>1</sup>
+
+<sup>1</sup> University of Kentucky &nbsp;&nbsp; <sup>2</sup> Washington University in St. Louis
+
+**NeurIPS 2026**
+
+[![Website](https://img.shields.io/badge/Website-Page-d47a7a?style=flat)](https://sudipbhujel.com.np/TRACE/)
+[![GitHub](https://img.shields.io/badge/GitHub-code-6b9f3a?style=flat&logo=github&logoColor=white)](https://github.com/sudip-bhujel/TRACE)
+[![Paper](https://img.shields.io/badge/Paper-PDF-b31b1b?style=flat&logo=openaccess&logoColor=f68212)](https://arxiv.org/pdf/2609.30258)
+[![License](https://img.shields.io/badge/License-MIT-3572b0?style=flat)](LICENSE)
+
 Gradient inversion attack framework for reinforcement learning agents in embodied visual navigation environments. We introduce **T**emporal **R**econstruction **A**ttack on **C**onsecutive **E**ncodings (**TRACE**) that reconstructs observations and recovers actions from intercepted policy gradients using an autoregressive transformer-based architecture.
 
 ![TRACE](assets/hero.png)
