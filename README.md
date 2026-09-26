@@ -270,3 +270,19 @@ We gratefully acknowledge the authors of the following open-source repositories,
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
+## Citation
+
+If you use this code in your research, please cite the following paper:
+
+```bibtex
+@misc{bhujel2026trace,
+  title         = {Temporal Gradient Inversion for Private Trajectory Reconstruction in Embodied Reinforcement Learning},
+  author        = {Sudip Bhujel and Shanghao Shi and Ruiquan Huang and Ning Zhang and Yang Xiao},
+  year          = {2026},
+  eprint        = {2609.30258},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  url           = {https://arxiv.org/abs/2609.30258}
+}
+```
