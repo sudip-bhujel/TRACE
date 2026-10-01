@@ -21,8 +21,16 @@ generator/
 attacker_new/
 victim_new/
 trajectory_data/
-paper/
+paper*/
 output/
 
 wandb/
 .env
+
+dlg/
+invertinggradients/
+reports/
+Learning_to_Invert/
+.claude/
+evaluation/
+results/

@@ -4,7 +4,7 @@
 
 <sup>1</sup> University of Kentucky &nbsp;&nbsp; <sup>2</sup> Washington University in St. Louis
 
-[![Website](https://img.shields.io/badge/Website-Page-d47a7a?style=flat)](https://sudipbhujel.com.np/TRACE/)
+[![Website](https://img.shields.io/badge/Website-Page-d47a7a?style=flat)](https://trace-gia.github.io/)
 [![GitHub](https://img.shields.io/badge/GitHub-code-6b9f3a?style=flat&logo=github&logoColor=white)](https://github.com/sudip-bhujel/TRACE)
 [![Paper](https://img.shields.io/badge/Paper-PDF-b31b1b?style=flat&logo=openaccess&logoColor=f68212)](https://arxiv.org/pdf/2609.30258)
 [![License](https://img.shields.io/badge/License-MIT-3572b0?style=flat)](LICENSE)
@@ -285,13 +285,14 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) for detai
 If you use this code in your research, please cite the following paper:
 
 ```bibtex
-@misc{bhujel2026trace,
+@inproceedings{bhujel2026trace,
   title         = {Temporal Gradient Inversion for Private Trajectory Reconstruction in Embodied Reinforcement Learning},
-  author        = {Sudip Bhujel and Shanghao Shi and Ruiquan Huang and Ning Zhang and Yang Xiao},
+  author        = {Bhujel, Sudip and Shi, Shanghao and Huang, Ruiquan and Zhang, Ning and Xiao, Yang},
+  booktitle     = {Advances in Neural Information Processing Systems (NeurIPS)},
   year          = {2026},
   eprint        = {2609.30258},
   archivePrefix = {arXiv},
   primaryClass  = {cs.LG},
-  url           = {https://arxiv.org/abs/2609.30258}
+  url           = {https://trace-gia.github.io/}
 }
 ```
