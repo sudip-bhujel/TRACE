@@ -4,7 +4,7 @@
 
 <sup>1</sup> University of Kentucky &nbsp;&nbsp; <sup>2</sup> Washington University in St. Louis
 
-[![Website](https://img.shields.io/badge/Website-Page-d47a7a?style=flat)](https://trace-gia.github.io/)
+[![Website](https://img.shields.io/badge/Website-Page-d47a7a?style=flat)](https://trace-rl.github.io/)
 [![GitHub](https://img.shields.io/badge/GitHub-code-6b9f3a?style=flat&logo=github&logoColor=white)](https://github.com/sudip-bhujel/TRACE)
 [![Paper](https://img.shields.io/badge/Paper-PDF-b31b1b?style=flat&logo=openaccess&logoColor=f68212)](https://arxiv.org/pdf/2609.30258)
 [![License](https://img.shields.io/badge/License-MIT-3572b0?style=flat)](LICENSE)
@@ -293,6 +293,6 @@ If you use this code in your research, please cite the following paper:
   eprint        = {2609.30258},
   archivePrefix = {arXiv},
   primaryClass  = {cs.LG},
-  url           = {https://trace-gia.github.io/}
+  url           = {https://trace-rl.github.io/}
 }
 ```
