@@ -5,8 +5,8 @@
 <sup>1</sup> University of Kentucky &nbsp;&nbsp; <sup>2</sup> Washington University in St. Louis
 
 [![Website](https://img.shields.io/badge/Website-Page-d47a7a?style=flat)](https://trace-rl.github.io/)
-[![GitHub](https://img.shields.io/badge/GitHub-code-6b9f3a?style=flat&logo=github&logoColor=white)](https://github.com/sudip-bhujel/TRACE)
-[![Paper](https://img.shields.io/badge/Paper-PDF-b31b1b?style=flat&logo=openaccess&logoColor=f68212)](https://arxiv.org/pdf/2609.30258)
+[![GitHub](https://img.shields.io/badge/GitHub-code-6b9f3a?style=flat&logo=github&logoColor=white)](https://sudipbhujel.com.np/r/trace-code)
+[![Paper](https://img.shields.io/badge/Paper-PDF-b31b1b?style=flat&logo=openaccess&logoColor=f68212)](https://sudipbhujel.com.np/r/trace-pdf)
 [![License](https://img.shields.io/badge/License-MIT-3572b0?style=flat)](LICENSE)
 
 Gradient inversion attack framework for reinforcement learning agents in embodied visual navigation environments. We introduce **T**emporal **R**econstruction **A**ttack on **C**onsecutive **E**ncodings (**TRACE**) that reconstructs observations and recovers actions from intercepted policy gradients using an autoregressive transformer-based architecture.
